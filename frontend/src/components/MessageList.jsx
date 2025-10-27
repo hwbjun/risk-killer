@@ -10,7 +10,7 @@ import TermTooltip from './TermTooltip';
 import CitationLink from './CitationLink';
 import CitationsList from './CitationsList';
 
-const MessageList = ({ messages, isTyping, elapsedTime, onGenerateChecklist, onDownloadReport, setInputMessage, sendMessage }) => {
+const MessageList = ({ messages, isTyping, isUsingSSE, elapsedTime, onGenerateChecklist, onDownloadReport, setInputMessage, sendMessage }) => {
   
   const formatTime = (ms) => {
     if (!ms) return '';
@@ -109,12 +109,51 @@ const MessageList = ({ messages, isTyping, elapsedTime, onGenerateChecklist, onD
     <div className="flex-1 p-2 lg:p-4 overflow-y-auto space-y-6">
       {messages.map(message => (
         <div key={message.id} className={`flex ${message.type === 'user' ? 'justify-end' : 'justify-start'}`}>
-          <div className={`${message.type === 'user' ? 'max-w-[85%]' : 'w-full'} rounded-2xl px-6 py-4 ${
+          <div className={`${
+            message.type === 'user' 
+              ? 'max-w-[85%]' 
+              : message.type === 'status' 
+              ? 'w-fit max-w-[85%]' 
+              : 'w-full'
+          } rounded-2xl px-6 py-4 ${
             message.type === 'user'
               ? 'bg-gradient-to-r from-indigo-500 to-indigo-600 text-white rounded-br-md'
+              : message.type === 'status'
+              ? 'bg-blue-50/60 border border-blue-200 rounded-bl-md'
               : 'bg-purple-50/40 border border-purple-100 rounded-bl-md'
           }`}>
-            {message.type === 'bot' ? (
+            {message.type === 'status' ? (
+              // SSE 상태 메시지 표시
+              <div className="flex items-center gap-3">
+                {/* 점 애니메이션 (모든 상태에서 표시) */}
+                <div className="typing-dots">
+                  <span></span><span></span><span></span>
+                </div>
+                
+                {/* 상태별 아이콘 */}
+                <div className="status-icon pulse-animation">
+                  {message.status === 'searching' && '🔍'}
+                  {message.status === 'evaluating' && '⚖️'}
+                  {message.status === 'deep_search' && '🧠'}
+                  {message.status === 'generating' && '✍️'}
+                  {message.status === 'started' && '🚀'}
+                  {message.status === 'agent_complete' && '✅'}
+                  {message.status === 'completed' && '✅'}
+                </div>
+                
+                <div className="flex-1">
+                  <div className="text-sm font-medium text-gray-700">
+                    {/* 본문에서 이모지 제거 */}
+                    {message.content.replace(/^[🔍⚖️🧠✍️🚀✅]\s*/, '')}
+                  </div>
+                  {message.status === 'deep_search' && (
+                    <div className="text-xs text-gray-500 mt-1">
+                      이 작업은 15-20초 정도 소요될 수 있습니다.
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : message.type === 'bot' ? (
               <>
                 <TypingMessage message={message} speed={8} citations={message.citations} />
                 
@@ -161,8 +200,8 @@ const MessageList = ({ messages, isTyping, elapsedTime, onGenerateChecklist, onD
         </div>
       ))}
 
-      {/* 실시간 타이머 로딩 */}
-      {isTyping && (
+      {/* 실시간 타이머 로딩 (SSE 미사용 시에만 표시) */}
+      {isTyping && !isUsingSSE && (
         <div className="flex justify-start">
           <div className="bg-purple-50/40 border border-purple-100 rounded-2xl rounded-bl-md px-6 py-4 w-fit">
             <div className="flex items-center gap-2 mb-3">

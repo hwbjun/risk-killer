@@ -21,6 +21,7 @@ const FDAChatbot = () => {
   const [messages, setMessages] = useState([]);
   const [inputMessage, setInputMessage] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isUsingSSE, setIsUsingSSE] = useState(false); // SSE 사용 여부 추적
   const [elapsedTime, setElapsedTime] = useState(0);
   const [showHelpModal, setShowHelpModal] = useState(false);
   const timerRef = useRef(null);
@@ -178,25 +179,171 @@ const FDAChatbot = () => {
     setMessages(selectedProjectMessages);
   };
 
-  // API 호출 함수
-  const callChatAPI = async (message, projectId) => {
-    try {
-      // 모바일에서도 접속 가능하도록 IP 주소 사용
-      const getApiUrl = () => {
-        if (process.env.REACT_APP_API_URL) {
-          return process.env.REACT_APP_API_URL;
+  // API URL 가져오기 헬퍼 함수
+  const getApiUrl = () => {
+    if (process.env.REACT_APP_API_URL) {
+      return process.env.REACT_APP_API_URL;
+    }
+    
+    // 모바일에서 접속할 때는 컴퓨터의 IP 주소 사용
+    const hostname = window.location.hostname;
+    if (hostname === 'localhost' || hostname === '127.0.0.1') {
+      return 'http://localhost:8000';
+    } else {
+      // 모바일에서 접속할 때는 같은 IP 주소의 8000 포트 사용
+      return `http://${hostname}:8000`;
+    }
+  };
+
+  // SSE를 사용한 스트리밍 메시지 전송
+  const sendMessageSSE = (message, projectId, updatedMessages) => {
+    return new Promise((resolve, reject) => {
+      const query = encodeURIComponent(message);
+      const projectParam = projectId ? `&project_id=${projectId}` : '';
+      const url = `${getApiUrl()}/api/chat/stream?query=${query}${projectParam}`;
+      
+      console.log('SSE 연결 시작:', url);
+      
+      // SSE 사용 표시 (기존 로딩 박스 숨김)
+      setIsUsingSSE(true);
+      
+      const eventSource = new EventSource(url);
+      
+      // 상태 메시지를 저장할 임시 변수
+      let currentStatusMessage = null;
+      let finalResponse = null;
+      
+      // 상태 이벤트 리스너
+      eventSource.addEventListener('status', (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          console.log('Status 이벤트:', data);
+          
+          // 상태 메시지 업데이트
+          const statusMessages = {
+            started: '질문을 분석하고 있습니다...',
+            searching: 'FDA 문서를 검색하고 있습니다...',
+            evaluating: '검색 결과를 평가하고 있습니다...',
+            deep_search: '깊이 검색중... 정확한 답변을 찾고 있습니다',
+            agent_complete: '추가 정보 수집 완료',
+            generating: '답변을 생성하고 있습니다...',
+            completed: '답변 생성 완료'
+          };
+          
+          const statusMsg = statusMessages[data.status] || data.message;
+          
+          // 현재 상태 메시지가 없으면 새로 추가
+          if (!currentStatusMessage) {
+            currentStatusMessage = {
+              id: Date.now() + 0.5,
+              type: 'status',
+              status: data.status,
+              content: statusMsg,
+              timestamp: new Date().toISOString()
+            };
+            
+            setMessages(prev => [...prev, currentStatusMessage]);
+          } else {
+            // 기존 상태 메시지 업데이트
+            setMessages(prev => 
+              prev.map(msg => 
+                msg.id === currentStatusMessage.id 
+                  ? { ...msg, status: data.status, content: statusMsg }
+                  : msg
+              )
+            );
+            currentStatusMessage.status = data.status;
+            currentStatusMessage.content = statusMsg;
+          }
+          
+        } catch (err) {
+          console.error('Status 파싱 오류:', err);
+        }
+      });
+      
+      // 결과 이벤트 리스너
+      eventSource.addEventListener('result', (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          console.log('Result 이벤트:', data);
+          
+          finalResponse = {
+            id: Date.now() + 1,
+            type: 'bot',
+            content: data.content,
+            keywords: data.keywords || [],
+            cfr_references: data.cfr_references || [],
+            sources: data.sources || [],
+            citations: data.citations || [],
+            timestamp: new Date().toISOString()
+          };
+          
+          // 상태 메시지 제거하고 최종 답변 추가
+          setMessages(prev => {
+            const withoutStatus = prev.filter(msg => msg.id !== currentStatusMessage?.id);
+            return [...withoutStatus, finalResponse];
+          });
+          
+          // SSE 사용 해제
+          setIsUsingSSE(false);
+          
+          eventSource.close();
+          resolve(finalResponse);
+          
+        } catch (err) {
+          console.error('Result 파싱 오류:', err);
+          setIsUsingSSE(false);
+          eventSource.close();
+          reject(err);
+        }
+      });
+      
+      // 에러 이벤트 리스너
+      eventSource.addEventListener('error', (e) => {
+        console.error('SSE 에러:', e);
+        
+        try {
+          if (e.data) {
+            const errorData = JSON.parse(e.data);
+            console.error('에러 메시지:', errorData.message);
+          }
+        } catch (err) {
+          console.error('에러 파싱 실패:', err);
         }
         
-        // 모바일에서 접속할 때는 컴퓨터의 IP 주소 사용
-        const hostname = window.location.hostname;
-        if (hostname === 'localhost' || hostname === '127.0.0.1') {
-          return 'http://localhost:8000';
-        } else {
-          // 모바일에서 접속할 때는 같은 IP 주소의 8000 포트 사용
-          return `http://${hostname}:8000`;
+        // 상태 메시지를 에러 메시지로 변경
+        if (currentStatusMessage) {
+          setMessages(prev => 
+            prev.map(msg => 
+              msg.id === currentStatusMessage.id 
+                ? { 
+                    ...msg, 
+                    type: 'bot', 
+                    content: '죄송합니다. 처리 중 오류가 발생했습니다. 다시 시도해주세요.',
+                    error: true
+                  }
+                : msg
+            )
+          );
         }
-      };
+        
+        // SSE 사용 해제
+        setIsUsingSSE(false);
+        
+        eventSource.close();
+        reject(new Error('SSE 연결 오류'));
+      });
       
+      // 연결 열림
+      eventSource.onopen = () => {
+        console.log('SSE 연결 성공');
+      };
+    });
+  };
+
+  // 기존 API 호출 함수 (폴백용)
+  const callChatAPI = async (message, projectId) => {
+    try {
       const apiUrl = `${getApiUrl()}/api/chat`;
       console.log('API URL:', apiUrl); // 디버깅용
 
@@ -289,55 +436,73 @@ const FDAChatbot = () => {
     startTimer();
 
     try {
-      const apiResponse = await callChatAPI(message, activeProject.id);
+      // SSE를 사용한 스트리밍 호출
+      await sendMessageSSE(message, activeProject.id, updatedMessages);
+      
       // 타이머 정지
       stopTimer();
       
-      const botMessage = {
-        id: Date.now() + 1,
-        type: 'bot',
-        content: apiResponse.content,
-        keywords: apiResponse.keywords || [],
-        cfr_references: apiResponse.cfr_references || [],
-        sources: apiResponse.sources || [],
-        citations: apiResponse.citations || [],  // ← 이 줄 추가!
-        responseTime: apiResponse.responseTime || elapsedTime,
-        agentResponseTime: apiResponse.agentResponseTime,
-        timestamp: apiResponse.timestamp
-      };
-      
-      console.log('Bot Message:', botMessage); // 디버깅용 - 메시지 객체 로그
-      console.log('Bot Message Citations:', botMessage.citations); // 디버깅용 - citations만 로그
-      
-      const finalMessages = [...updatedMessages, botMessage];
-      setMessages(finalMessages);
-      
-      // 프로젝트 메시지도 업데이트
+      // 최종 메시지는 sendMessageSSE 내부에서 이미 처리됨
+      // 프로젝트 메시지 동기화
       setProjectMessages(prev => ({
         ...prev,
-        [activeProject.id]: finalMessages
+        [activeProject.id]: messages
       }));
       
     } catch (error) {
       stopTimer();
+      setIsUsingSSE(false); // SSE 사용 해제
       console.error('메시지 전송 오류:', error);
-      const errorMessage = {
-        id: Date.now() + 1,
-        type: 'bot',
-        content: '죄송합니다. 응답을 생성하는데 문제가 발생했습니다.',
-        keywords: [],
-        cfr_references: [],
-        citations: [],  // ← 이 줄 추가!
-        responseTime: elapsedTime
-      };
-      const finalMessages = [...updatedMessages, errorMessage];
-      setMessages(finalMessages);
       
-      // 프로젝트 메시지도 업데이트
-      setProjectMessages(prev => ({
-        ...prev,
-        [activeProject.id]: finalMessages
-      }));
+      // SSE 실패 시 기존 API로 폴백
+      console.log('SSE 실패, 기존 API로 폴백 시도...');
+      
+      try {
+        const apiResponse = await callChatAPI(message, activeProject.id);
+        
+        const botMessage = {
+          id: Date.now() + 1,
+          type: 'bot',
+          content: apiResponse.content,
+          keywords: apiResponse.keywords || [],
+          cfr_references: apiResponse.cfr_references || [],
+          sources: apiResponse.sources || [],
+          citations: apiResponse.citations || [],
+          responseTime: apiResponse.responseTime || elapsedTime,
+          agentResponseTime: apiResponse.agentResponseTime,
+          timestamp: apiResponse.timestamp
+        };
+        
+        const finalMessages = [...updatedMessages, botMessage];
+        setMessages(finalMessages);
+        
+        // 프로젝트 메시지도 업데이트
+        setProjectMessages(prev => ({
+          ...prev,
+          [activeProject.id]: finalMessages
+        }));
+        
+      } catch (fallbackError) {
+        console.error('폴백 API도 실패:', fallbackError);
+        
+        const errorMessage = {
+          id: Date.now() + 1,
+          type: 'bot',
+          content: '죄송합니다. 응답을 생성하는데 문제가 발생했습니다.',
+          keywords: [],
+          cfr_references: [],
+          citations: [],
+          responseTime: elapsedTime
+        };
+        const finalMessages = [...updatedMessages, errorMessage];
+        setMessages(finalMessages);
+        
+        // 프로젝트 메시지도 업데이트
+        setProjectMessages(prev => ({
+          ...prev,
+          [activeProject.id]: finalMessages
+        }));
+      }
     } finally {
       setIsGenerating(false);
     }
@@ -577,6 +742,7 @@ const FDAChatbot = () => {
           <MessageList
             messages={messages}
             isTyping={isGenerating}
+            isUsingSSE={isUsingSSE}
             elapsedTime={elapsedTime}
             onGenerateChecklist={generateChecklist}
             onDownloadReport={downloadReport}

@@ -9,14 +9,20 @@
 - **역할**: 전체 애플리케이션의 상태 관리 및 컴포넌트 조합
 - **주요 상태**: 
   - `projects`: 프로젝트 목록
-  - `messages`: 현재 프로젝트의 메시지
+  - `projectMessages`: 프로젝트별 메시지 저장 객체
+  - `messages`: 현재 화면에 표시되는 메시지
   - `inputMessage`: 입력창 텍스트
-  - `isTyping`: AI 응답 생성 중 상태
+  - `isGenerating`: AI 응답 생성 중 상태
+  - `elapsedTime`: 응답 생성 경과 시간
+  - `isOnline`: 네트워크 연결 상태
+  - `showInstallPrompt`: PWA 설치 프롬프트 표시 여부
 - **주요 기능**:
-  - 프로젝트 생성/선택/삭제
+  - 프로젝트 생성/선택/삭제/이름 변경
   - 메시지 전송 및 API 호출
-  - 파일 업로드 처리
+  - 파일 업로드 처리 (드래그 앤 드롭 지원)
   - 대화 초기화
+  - PWA 설치 및 오프라인 모드 지원
+  - 시간대별 인사말 표시
 
 ### 2. Sidebar.jsx
 - **역할**: 좌측 프로젝트 관리 패널
@@ -85,6 +91,51 @@
 - **기능**:
   - USER/BOT 대화 예시 표시
 
+### 8. HelpModal.jsx
+- **역할**: 도움말 모달 창
+- **Props**:
+  - `isOpen`: 모달 열림 상태
+  - `onClose`: 모달 닫기 콜백
+  - `onSelectQuestion`: 예시 질문 선택 콜백
+  - `onSendMessage`: 메시지 전송 콜백
+- **기능**:
+  - 예시 질문 목록 표시
+  - 질문 선택 시 입력창에 자동 입력 또는 즉시 전송
+
+### 9. CitationLink.jsx
+- **역할**: 개별 인용 링크 표시
+- **기능**:
+  - FDA 문서 링크 렌더링
+  - 외부 링크 새 탭에서 열기
+
+### 10. CitationsList.jsx
+- **역할**: 인용 문서 목록 표시
+- **Props**:
+  - `citations`: 인용 문서 배열
+- **기능**:
+  - 메시지에 포함된 모든 인용 문서 목록화
+  - CitationLink 컴포넌트 활용
+
+### 11. TermDictionary.jsx
+- **역할**: 용어 사전 기능
+- **기능**:
+  - FDA 관련 전문 용어 설명
+  - 사용자가 모르는 용어 검색 가능
+
+### 12. TermTooltip.jsx
+- **역할**: 용어 툴팁 표시
+- **기능**:
+  - 텍스트 내 전문 용어에 마우스 오버 시 설명 표시
+  - 인라인 용어 도움말
+
+### 13. TypingMessage.jsx
+- **역할**: 타이핑 애니메이션 표시
+- **Props**:
+  - `elapsedTime`: 경과 시간
+- **기능**:
+  - AI 응답 생성 중 로딩 애니메이션
+  - 경과 시간 표시
+
 ## Component Design Principles
 
 ### 1. 단일 책임 원칙
@@ -108,14 +159,23 @@
 ```
 frontend/src/
 ├── App.js                    # 메인 컨테이너
+├── App.css                   # 스타일시트
+├── index.js                  # 앱 진입점
 ├── components/
 │   ├── Sidebar.jsx          # 프로젝트 관리 패널
 │   ├── MessageList.jsx      # 메시지 목록 (메모화됨)
 │   ├── InputBar.jsx         # 입력 영역
 │   ├── PromptChips.jsx      # 프롬프트 칩
 │   ├── ScenarioCards.jsx    # 시나리오 카드
-│   └── SampleSnippets.jsx   # 예시 대화 스니펫
-└── App.css
+│   ├── SampleSnippets.jsx   # 예시 대화 스니펫
+│   ├── HelpModal.jsx        # 도움말 모달
+│   ├── CitationLink.jsx     # 인용 링크
+│   ├── CitationsList.jsx    # 인용 목록
+│   ├── TermDictionary.jsx   # 용어 사전
+│   ├── TermTooltip.jsx      # 용어 툴팁
+│   └── TypingMessage.jsx    # 타이핑 애니메이션
+└── hooks/
+    └── useTypingEffect.js   # 타이핑 효과 커스텀 훅
 ```
 
 ## Usage Guidelines

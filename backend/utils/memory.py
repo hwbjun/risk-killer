@@ -64,6 +64,26 @@ class ConversationMemory:
         context_parts.append("\n## 현재 질문:")
         return "\n".join(context_parts)
     
+    def get_recent_context_summary(self) -> str:
+        """검색 쿼리 증강용 간단한 컨텍스트 요약 (최근 1-2턴만)"""
+        if not self.messages:
+            return ""
+        
+        # 최근 2턴 (사용자 질문 + 어시스턴트 답변) 가져오기
+        recent_messages = self.messages[-4:]  # 최근 2턴 = 4개 메시지
+        
+        if not recent_messages:
+            return ""
+        
+        context_lines = []
+        for msg in recent_messages:
+            # 답변은 첫 200자만 (너무 길면 토큰 낭비)
+            content = msg.content[:200] if msg.role == "assistant" else msg.content
+            role_kr = "Q" if msg.role == "user" else "A"
+            context_lines.append(f"{role_kr}: {content}")
+        
+        return "\n".join(context_lines)
+    
     def clear_history(self):
         """대화 히스토리 초기화"""
         self.messages.clear()

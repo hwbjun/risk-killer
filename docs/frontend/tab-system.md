@@ -1,24 +1,48 @@
-## frontend/tab-system.md
-
-```markdown
-# Tab System Architecture
+# 프로젝트 관리 시스템
 
 ## 현재 구조
-App.js에서 activeTab state로 탭 전환 관리
+App.js에서 프로젝트별 대화 관리 시스템 구현
 
-## 탭 종류
-- `regulations`: 기본 규제 확인 (채팅 기능)
-- `certificates`: 인증서 분석 (개발 예정)
-- `documents`: 서류 준비 (개발 예정) 
-- `checklist`: 최종 체크리스트 (개발 예정)
+## 주요 기능
 
-## 탭 추가 방법
-1. progressSteps 배열에 새 탭 정보 추가
-2. renderTabContent()에 case 추가
-3. 해당 탭 컴포넌트 구현
+### 1. 프로젝트 생성
+- 새 프로젝트 버튼 클릭 시 프롬프트로 이름 입력
+- 프로젝트가 없을 때 첫 메시지 전송 시 자동 생성
+- 생성 시 현재 시간 포함 (예: "FDA 수출 문의 14:30")
+
+### 2. 프로젝트 선택
+- 사이드바에서 프로젝트 클릭 시 해당 프로젝트로 전환
+- 각 프로젝트는 독립적인 대화 기록 유지
+- `projectMessages` 객체에 프로젝트별 메시지 저장
+
+### 3. 프로젝트 삭제
+- 삭제 버튼 클릭 시 확인 후 삭제
+- 마지막 프로젝트 삭제 시 빈 상태로 전환
+- 활성 프로젝트 삭제 시 첫 번째 남은 프로젝트 자동 활성화
+
+### 4. 프로젝트 이름 변경
+- 프로젝트 이름 옆 연필 아이콘 클릭
+- 프롬프트로 새 이름 입력
 
 ## 상태 관리
-- activeTab: 현재 활성 탭
-- messages: regulations 탭 전용
-- 각 탭별 독립된 상태 필요 시 별도 state 추가
-```
+- `projects`: 프로젝트 목록 배열
+- `projectMessages`: 프로젝트별 메시지 저장 객체 `{[projectId]: messages[]}`
+- `messages`: 현재 화면에 표시되는 메시지 배열
+- 각 프로젝트는 고유 ID(타임스탬프)로 식별
+
+## 백엔드 연동
+- API 호출 시 `project_id` 전달
+- 백엔드에서 프로젝트별 독립적인 Agent 인스턴스 생성
+- `/api/project/{project_id}` DELETE 엔드포인트로 프로젝트 삭제
+- `/api/project/{project_id}/reset` POST 엔드포인트로 대화 초기화
+
+## 향후 개발 가능한 탭 시스템 (현재 미구현)
+- `certificates`: 인증서 분석 탭
+- `documents`: 서류 준비 탭
+- `checklist`: 최종 체크리스트 탭
+
+탭 시스템 추가 시 고려사항:
+1. `activeTab` state 추가
+2. `progressSteps` 배열로 탭 정보 관리
+3. `renderTabContent()` 함수로 탭별 컨텐츠 렌더링
+4. 각 탭별 독립된 상태 관리

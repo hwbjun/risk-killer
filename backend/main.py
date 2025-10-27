@@ -6,10 +6,14 @@ from typing import Dict, Optional, List
 import os
 from dotenv import load_dotenv
 import logging
+import json
+import asyncio
 
 from utils.agent import FDAAgent
 import time
 from datetime import datetime
+from utils.orchestrator import initialize_global_services
+from sse_starlette import EventSourceResponse
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -51,6 +55,12 @@ class ChatResponse(BaseModel):
     responseTime: float = 0
     agentResponseTime: float = 0
     timestamp: str = ""
+
+@app.on_event("startup")
+async def startup_event():
+    """서버 시작 시 전역 서비스 초기화"""
+    initialize_global_services()
+    print("🚀 서버 준비 완료!")
 
 @app.get("/")
 async def root():
@@ -116,6 +126,10 @@ async def chat(request: ChatRequest):
         cfr_references = agent_response.get("cfr_references", []) if isinstance(agent_response, dict) else []
         sources = agent_response.get("sources", []) if isinstance(agent_response, dict) else []
         
+        # 🆕 대화 히스토리를 메모리에 저장 (후속 질문 처리를 위함)
+        agent.memory.add_message(role="user", content=request.message)
+        agent.memory.add_message(role="assistant", content=content)
+        
         # Fallback simple extractor if missing
         if not cfr_references:
             extracted = _extract_citations(content)
@@ -179,6 +193,51 @@ async def reset_project_conversation(project_id: int):
         project_agents[project_id] = FDAAgent()
         logger.info(f"프로젝트 {project_id} 새 에이전트 생성")
         return {"message": "새로운 대화가 시작되었습니다."}
+
+@app.get("/api/chat/stream")
+async def chat_stream(query: str, project_id: Optional[int] = None):
+    """SSE를 사용한 스트리밍 채팅 엔드포인트"""
+    if not fda_agent:
+        raise HTTPException(status_code=500, detail="Agent is not available.")
+    
+    logger.info(f"SSE 스트리밍 요청: query='{query}', project_id={project_id}")
+    
+    # 프로젝트별 에이전트 선택
+    if project_id:
+        if project_id not in project_agents:
+            project_agents[project_id] = FDAAgent()
+            logger.info(f"새 프로젝트 에이전트 생성: {project_id}")
+        agent = project_agents[project_id]
+    else:
+        agent = fda_agent
+    
+    async def event_generator():
+        """SSE 이벤트를 생성하는 비동기 제너레이터"""
+        try:
+            # Agent의 chat_stream 메서드를 호출
+            async for event in agent.chat_stream(query):
+                event_type = event.get("type", "message")
+                event_data = event.get("data", {})
+                
+                # SSE 형식으로 전송
+                yield {
+                    "event": event_type,
+                    "data": json.dumps(event_data, ensure_ascii=False)
+                }
+                
+                # 작은 지연 추가 (안정성)
+                await asyncio.sleep(0.01)
+                
+        except Exception as e:
+            logger.error(f"SSE 스트리밍 오류: {e}", exc_info=True)
+            yield {
+                "event": "error",
+                "data": json.dumps({
+                    "message": f"처리 중 오류가 발생했습니다: {str(e)}"
+                }, ensure_ascii=False)
+            }
+    
+    return EventSourceResponse(event_generator())
 
 if __name__ == "__main__":
     import uvicorn

@@ -22,7 +22,7 @@ LOG_LEVEL=INFO
 ### Frontend (.env)
 ```bash
 # API 엔드포인트
-REACT_APP_API_URL=http://localhost:8000
+REACT_APP_API_URL=http://localhost:8002
 
 # 프로덕션 환경에서는
 REACT_APP_API_URL=https://your-backend-domain.com
@@ -31,7 +31,7 @@ REACT_APP_API_URL=https://your-backend-domain.com
 ## 환경별 설정
 
 ### 개발 환경
-- Backend: http://localhost:8000
+- Backend: http://localhost:8002
 - Frontend: http://localhost:3000
 - Qdrant: Cloud 인스턴스
 
