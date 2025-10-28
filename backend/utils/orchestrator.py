@@ -124,8 +124,8 @@ class SimpleOrchestrator:
         # 컬렉션별 최적화된 쿼리 생성
         optimized_queries = self._generate_optimized_queries(collections, decomposition, augmented_query)
         
-        # 🚀 Phase 1: limit 5 → 3으로 축소 (검색 속도 향상)
-        SEARCH_LIMIT = 3  # 컬렉션당 3개만
+        # 검색 limit (쿼리 변동성 대응)
+        SEARCH_LIMIT = 5  # 컬렉션당 5개
         
         # 병렬 검색 실행
         futures = []
@@ -170,11 +170,10 @@ class SimpleOrchestrator:
             collection: str, 
             original_query: str,
             augmented_query: str,
-            limit: int = 3  # 🚀 기본값 3으로 변경
+            limit: int = 5  # 기본값 5
         ) -> List[Dict]:
         """
         단일 컬렉션에 대해 벡터 + BM25 하이브리드 검색
-        Phase 1 최적화: limit 축소
         """
         try:
             # 1. 벡터 검색 (증강 쿼리)
@@ -243,10 +242,9 @@ class SimpleOrchestrator:
     def merge_and_rank(self, parallel_results: dict, original_query: str = None) -> List[Dict]:
         """
         하이브리드 검색 결과를 병합하고 Reranking
-        Phase 1 최적화: 쿼터 축소 (5개 → 3개)
         """
-        MIN_SCORE = 0.30  # 하이브리드 점수 기준
-        QUOTA_PER_COLLECTION = 3  # 🚀 5개 → 3개로 축소
+        MIN_SCORE = 0.20  # 하이브리드 점수 기준 (0.30 → 0.25 → 0.20으로 낮춤)
+        QUOTA_PER_COLLECTION = 5  # 컬렉션당 5개
         
         final = []
         collection_stats = {}
@@ -288,14 +286,14 @@ class SimpleOrchestrator:
         if original_query and final:
             print(f"\n🔄 Cross-Encoder Reranking 시작...")
             
-            # 🚀 Phase 1: top_k 축소 (15개 → 10개)
-            TOP_K = 10
+            # Reranking top_k
+            TOP_K = 15
             
             # Reranking 수행
             reranked = self.reranker.rerank(
                 query=original_query,
                 results=final,
-                top_k=TOP_K,  # 🚀 15개 → 10개
+                top_k=TOP_K,
                 score_field='hybrid_score'
             )
             

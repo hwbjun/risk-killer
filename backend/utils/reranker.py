@@ -26,7 +26,7 @@ class CrossEncoderReranker:
                 - ms-marco-MiniLM-L-6-v2: 빠르고 정확 (추천)
                 - ms-marco-MiniLM-L-12-v2: 더 정확하지만 느림
         """
-        print(f"🔧 Cross-Encoder Reranker 초기화 중: {model_name}")
+        print(f"[INIT] Cross-Encoder Reranker: {model_name}")
         
         # 캐시 디렉토리 설정 (프로젝트 내부)
         cache_dir = os.path.join(os.path.dirname(__file__), '..', '.cache', 'sentence_transformers')
@@ -34,7 +34,7 @@ class CrossEncoderReranker:
         
         self.model = CrossEncoder(model_name, max_length=512, device='cpu')
         self.model_name = model_name
-        print(f"✅ Reranker 초기화 완료")
+        print(f"[DONE] Reranker initialized")
     
     def rerank(
         self, 
@@ -58,7 +58,7 @@ class CrossEncoderReranker:
         if not results:
             return []
         
-        print(f"\n🔍 Reranking 시작: {len(results)}개 문서")
+        print(f"\n[RERANK] Starting: {len(results)} documents")
         
         # 질문-문서 쌍 생성
         pairs = []
@@ -90,7 +90,7 @@ class CrossEncoderReranker:
         top_results = reranked[:top_k]
         
         # 디버깅 정보
-        print(f"📊 Reranking 결과:")
+        print(f"[RESULT] Reranking results:")
         for i, r in enumerate(top_results[:5], 1):
             original = r['original_score']
             rerank = r['rerank_score']
@@ -98,7 +98,7 @@ class CrossEncoderReranker:
             title = r.get('title', 'N/A')[:50]
             
             print(f"  [{i}] {collection} - {title}")
-            print(f"      원본: {original:.3f} → Rerank: {rerank:.3f}")
+            print(f"      Original: {original:.3f} -> Rerank: {rerank:.3f}")
         
         return top_results
     
@@ -126,7 +126,7 @@ class CrossEncoderReranker:
         # 임계값 필터링
         filtered = [r for r in reranked if r['rerank_score'] >= min_score]
         
-        print(f"🔍 임계값 필터링: {len(reranked)}개 → {len(filtered)}개 (최소: {min_score})")
+        print(f"[FILTER] Threshold filtering: {len(reranked)} -> {len(filtered)} (min: {min_score})")
         
         return filtered[:top_k]
     
@@ -135,7 +135,7 @@ class CrossEncoderReranker:
         Reranking 점수 상세 분석 (디버깅용)
         """
         print(f"\n{'='*80}")
-        print(f"🔬 Reranking 점수 상세 분석 (상위 {top_n}개)")
+        print(f"[DEBUG] Reranking score analysis (top {top_n})")
         print(f"{'='*80}\n")
         
         for i, r in enumerate(results[:top_n], 1):
@@ -221,7 +221,7 @@ class RecencyBooster:
                 r['recency_boost'] = boost
                 r['recency_reasons'] = reasons
                 
-                print(f"  📅 최신 문서 부스트: {r.get('title', '')[:40]}... ({', '.join(reasons)}) (+{boost:.3f})")
+                print(f"  [BOOST] Recent document: {r.get('title', '')[:40]}... ({', '.join(reasons)}) (+{boost:.3f})")
         
         return sorted(results, key=lambda x: x.get('rerank_score', 0), reverse=True)
 
@@ -277,11 +277,11 @@ class AuthorityQuestionBooster:
             if matches > 0:
                 boost = boost_factor * matches
                 original_score = r.get('rerank_score', 0)
-                r['rerank_score'] = min(original_score + boost, 1.0)  # 최대 1.0
+                r['rerank_score'] = min(original_score + boost, 10.0)  # 최대 10.0 (RecencyBooster와 동일)
                 r['authority_boost'] = boost
                 r['authority_keywords'] = list(set(matched_categories))
                 
-                print(f"  ⚡ 권한 키워드 부스트: {r.get('title', '')[:40]}... (+{boost:.3f})")
+                print(f"  [BOOST] Authority keywords: {r.get('title', '')[:40]}... (+{boost:.3f})")
         
         # 부스트 후 재정렬
         return sorted(results, key=lambda x: x.get('rerank_score', 0), reverse=True)

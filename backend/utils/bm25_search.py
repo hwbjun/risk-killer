@@ -30,7 +30,7 @@ class BM25SearchService:
         if collection_name in self.documents_cache:
             return self.documents_cache[collection_name]
         
-        print(f"📚 [{collection_name}] 문서 로딩 중...")
+        print(f"[LOADING] {collection_name} documents...")
         all_documents = []
         offset = None
         limit = 100
@@ -52,7 +52,7 @@ class BM25SearchService:
             offset = next_offset
         
         self.documents_cache[collection_name] = all_documents
-        print(f"✅ [{collection_name}] {len(all_documents)}개 문서 로드 완료")
+        print(f"[DONE] {collection_name}: {len(all_documents)} documents loaded")
         return all_documents
     
     def _build_bm25_index(self, collection_name: str):
@@ -64,10 +64,10 @@ class BM25SearchService:
         corpus = [doc.payload.get('text', '') for doc in documents]
         tokenized_corpus = [doc.lower().split() for doc in corpus]
         
-        print(f"🔨 [{collection_name}] BM25 인덱스 생성 중...")
+        print(f"[BUILD] {collection_name} BM25 index...")
         bm25 = BM25Okapi(tokenized_corpus)
         self.bm25_indices[collection_name] = bm25
-        print(f"✅ [{collection_name}] BM25 인덱스 생성 완료")
+        print(f"[DONE] {collection_name} BM25 index created")
         
         return bm25
     
@@ -118,4 +118,4 @@ class BM25SearchService:
         """캐시 초기화"""
         self.bm25_indices.clear()
         self.documents_cache.clear()
-        print("🗑️ BM25 캐시 초기화 완료")
+        print("[CLEAR] BM25 cache cleared")

@@ -213,11 +213,17 @@ async def chat_stream(query: str, project_id: Optional[int] = None):
     
     async def event_generator():
         """SSE 이벤트를 생성하는 비동기 제너레이터"""
+        final_response_content = None  # 최종 답변 저장용
+        
         try:
             # Agent의 chat_stream 메서드를 호출
             async for event in agent.chat_stream(query):
                 event_type = event.get("type", "message")
                 event_data = event.get("data", {})
+                
+                # 최종 답변 저장 (result 이벤트에서)
+                if event_type == "result":
+                    final_response_content = event_data.get("content", "")
                 
                 # SSE 형식으로 전송
                 yield {
@@ -227,6 +233,12 @@ async def chat_stream(query: str, project_id: Optional[int] = None):
                 
                 # 작은 지연 추가 (안정성)
                 await asyncio.sleep(0.01)
+            
+            # 대화 히스토리를 메모리에 저장 (후속 질문 처리를 위함)
+            if final_response_content:
+                agent.memory.add_message(role="user", content=query)
+                agent.memory.add_message(role="assistant", content=final_response_content)
+                logger.info(f"프로젝트 {project_id}: 메모리에 대화 저장 완료")
                 
         except Exception as e:
             logger.error(f"SSE 스트리밍 오류: {e}", exc_info=True)

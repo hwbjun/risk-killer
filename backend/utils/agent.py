@@ -20,7 +20,7 @@ class FDAAgent:
     def __init__(self):
         # LlamaIndex 전역 설정 (rag_engine과 동일하게 설정)
         Settings.embed_model = OpenAIEmbedding(model="text-embedding-3-small", api_key=os.getenv("OPENAI_API_KEY"))
-        Settings.llm = OpenAI(model="gpt-4-turbo", temperature=0.1, api_key=os.getenv("OPENAI_API_KEY"))
+        Settings.llm = OpenAI(model="gpt-4-turbo", temperature=0, api_key=os.getenv("OPENAI_API_KEY"))
 
         # 1. 모든 FDA 컬렉션을 '전문가 툴'로 변환
         self.fda_tools = create_fda_tools()
@@ -460,18 +460,36 @@ Answer with ONLY the product name or "None":
 
 사용자 질문: {original_query}
 
+⚠️ 중요: 검색 커버리지를 위해 원본 질문의 핵심 키워드를 반드시 포함하세요!
+
 다음 요소들을 포함하여 검색 쿼리를 생성하세요:
-1. 핵심 키워드를 영어로 변환
-2. 관련 동의어 및 전문 용어 추가
-3. FDA 규제 맥락에 맞는 검색어 확장
-4. 컬렉션별 특화 키워드 포함
-5. **최신 정보 키워드 추가** (특히 알레르겐 질문의 경우 "sesame", "nine allergens", "FASTER Act" 포함)
+1. **원본 질문의 핵심 키워드 보존** (특히 "can", "add", "allergens" 같은 핵심 동사/명사)
+2. 핵심 키워드를 영어로 변환
+3. 관련 동의어 및 전문 용어 추가
+4. FDA 규제 맥락에 맞는 검색어 확장
+5. **질문 유형에 따른 균형잡힌 키워드 추가:**
+   - 권한/제한 질문 ("Can", "Does", "Who determines"): 법적 근거 키워드 필수
+     → "cannot", "authority", "Congress", "statutory", "Section 201", "FD&C Act"
+   - 정의 질문 ("What is"): 최신 정보 키워드 포함
+     → "sesame", "nine allergens", "FASTER Act 2021"
+   - 둘 다 해당하면: 법적 근거 + 최신 정보 모두 포함
 
 예시:
-- "비용이 얼마나 드나요?" → "costs payment fees supervision relabeling expenses"
-- "어떤 절차가 필요한가요?" → "procedures process requirements steps documentation"
-- "규정은 무엇인가요?" → "regulations requirements CFR guidelines compliance"
-- "What is a major food allergen?" → "major food allergen sesame nine allergens FASTER Act 2021 milk eggs fish shellfish tree nuts peanuts wheat soybeans"
+- "비용이 얼마나 드나요?" 
+  → "비용 얼마 costs payment fees supervision relabeling expenses"
+  (원본 키워드 "비용" 포함!)
+  
+- "What is a major food allergen?" 
+  → "what is major food allergen definition nine allergens milk eggs fish shellfish tree nuts peanuts wheat soybeans sesame FASTER Act 2021"
+  (원본 키워드 "what is", "major food allergen" 포함!)
+  
+- "Can FDA add allergens to the list?"
+  → "Can FDA add allergens list authority statutory Congress cannot alter Section 201 FD&C Act regulatory power legislative FASTER Act sesame nine major food allergen"
+  (원본 키워드 "Can FDA add allergens list" 모두 포함 + 법적 근거 + 최신 정보)
+  
+- "Who determines major food allergens?"
+  → "who determines major food allergens Congress statutory authority Section 201 legislative power FD&C Act cannot alter FDA role"
+  (원본 키워드 "who determines major food allergens" 모두 포함!)
 
 변환된 검색 쿼리만 반환하세요 (설명 없이):
 """
@@ -659,20 +677,47 @@ Use the most relevant collections based on the product characteristics above.
             
             if is_followup and len(self.search_results_cache) >= 2:
                 print(f"\n🔗 후속 질문 감지 - 이전 검색 결과 재사용")
-                # 이전 결과 가져오기
                 previous_results = self.search_results_cache[-2]['results']
                 current_results = ranked_results
+                
+                # 🆕 이전 검색에서 사용한 컬렉션 재사용
+                previous_collections = list(set(r['collection'] for r in previous_results))
+                if previous_collections != collections:
+                    print(f"  🔄 이전 컬렉션 재사용: {previous_collections}")
+                    collections = list(set(collections + previous_collections))
+                
+                # 🆕 권한 관련 질문 감지
+                authority_keywords = ["권한", "누구", "who", "can", "cannot", "authority", "determines"]
+                is_authority_question = any(kw in query.lower() for kw in authority_keywords)
+                
+                # 🆕 이전 결과에서 고품질 문서 추출 (score > 0.5로 낮춤)
+                high_quality_docs = [r for r in previous_results if r.get('score', 0) > 0.5]
+                
+                # 🆕 권한 질문이면 authority 키워드 포함 문서 우선
+                if is_authority_question:
+                    authority_docs = [
+                        r for r in previous_results 
+                        if any(kw in r.get('text', '').lower() for kw in 
+                               ["authority", "congress", "statutory", "cannot", "must", "legislative"])
+                    ]
+                    if authority_docs:
+                        print(f"  🏛️ 권한 관련 문서 발견: {len(authority_docs)}개")
+                        # authority 문서를 최우선으로
+                        high_quality_docs = authority_docs + [d for d in high_quality_docs if d not in authority_docs]
+                
+                if high_quality_docs:
+                    print(f"  ⭐ 이전 고품질 문서: {len(high_quality_docs)}개 (점수 > 0.5)")
+                    for doc in high_quality_docs[:5]:
+                        print(f"     - {doc.get('title', 'N/A')[:50]}... (점수: {doc.get('score', 0):.3f})")
                 
                 # 🆕 이전 결과에서 법 조항/섹션 추출
                 legal_references = self._extract_legal_references(previous_results)
                 if legal_references:
                     print(f"  📜 이전 문서에서 추출된 법 조항: {', '.join(legal_references[:3])}")
                     
-                    # 🆕 현재 검색 결과가 부족하면 법 조항으로 재검색
-                    if len(current_results) < 2:
+                    if len(current_results) < 3:
                         print(f"  🔍 현재 결과 부족({len(current_results)}개) - 법 조항으로 재검색")
-                        # 법 조항으로 추가 검색
-                        additional_query = " ".join(legal_references[:2])  # 상위 2개 법 조항
+                        additional_query = " ".join(legal_references[:2])
                         additional_results = orchestrator.parallel_search(
                             query=additional_query,
                             collections=collections,
@@ -680,23 +725,36 @@ Use the most relevant collections based on the product characteristics above.
                         )
                         additional_ranked = orchestrator.merge_and_rank(additional_results)
                         print(f"  ✅ 추가 검색 완료: {len(additional_ranked)}개 결과")
-                        # 현재 결과에 병합
-                        current_results = list(current_results) + list(additional_ranked[:3])
+                        current_results = list(current_results) + list(additional_ranked[:5])
                 
-                # 병합: 이전 결과 상위 3개 + 현재 결과
-                merged_results = list(previous_results[:3]) + list(current_results)
+                # 🆕 병합 전략: 고품질 문서 우선 + 이전 상위 결과 더 많이 + 현재 결과
+                merged_results = []
+                # 고품질 문서 최대 5개
+                merged_results.extend(high_quality_docs[:5])
                 
-                # 중복 제거 (텍스트 기준)
-                seen_texts = set()
+                # 이전 결과에서 더 많이 가져오기 (5개 → 8개)
+                for r in previous_results[:8]:
+                    if r not in merged_results:
+                        merged_results.append(r)
+                        if len(merged_results) >= 8:
+                            break
+                
+                merged_results.extend(current_results)
+                
+                # 중복 제거 (더 관대한 기준)
+                seen_keys = set()
                 unique_results = []
                 for r in merged_results:
-                    text_key = r.get('text', '')[:100]  # 첫 100자로 중복 판단
-                    if text_key not in seen_texts:
-                        seen_texts.add(text_key)
+                    title = r.get('title', '')[:50]
+                    text = r.get('text', '')[:50]  # 100 → 50으로 변경 (더 많은 유사 문서 허용)
+                    key = f"{title}|{text}"
+                    
+                    if key not in seen_keys:
+                        seen_keys.add(key)
                         unique_results.append(r)
                 
-                ranked_results = unique_results[:10]  # 상위 10개만
-                print(f"  ✅ 병합 완료: 이전 {len(previous_results[:3])}개 + 현재 {len(current_results)}개 → 총 {len(ranked_results)}개")
+                ranked_results = unique_results[:12]  # 10 → 12개로 증가
+                print(f"  ✅ 병합 완료: 고품질 {len(high_quality_docs[:5])}개 + 이전 {min(8-len(high_quality_docs[:5]), len(previous_results[:8]))}개 + 현재 {len(current_results)}개 → 총 {len(ranked_results)}개")
             
             # 결과 충분성 평가 및 응답 생성
             if self._is_parallel_result_sufficient(ranked_results, decomposition or {}):
@@ -997,60 +1055,58 @@ Question: "{query}"
 - **핵심: 질문에서 물어본 대상(Who)을 첫 문장에 바로 답하세요!**
 
 **2) Yes/No 질문 (Can/Does/Is/Will):**
-질문이 Yes/No 질문("Can...", "Does...", "Is...", "Will..." 등)일 경우:
 
-**Step 0: 질문의 핵심 행위 파악**
-- "add to the list" = "alter the list" = "change the list" = "modify the statutory list"
-  → 이것은 statutory list 변경을 의미!
-- "require labeling" ≠ "add to the list" (완전히 다른 권한)
+**핵심 원칙:**
+1. **질문의 주어를 정확히 파악하세요**
+   - 질문 주어와 문서 주어가 일치하는지 확인
+   - 주어가 다르면 답도 달라질 수 있음
 
-**Step 1: 문서에서 직접 대응하는 키워드 우선 검색**
-- 질문: "add/alter/change the list" → 문서: "cannot alter the statutory list" ✅
-- **"cannot"이 있으면 무조건 "아니요"!** (다른 긍정 문장 무시)
+2. **질문과 문서의 의미가 일치하는지 확인하세요**
+   - 질문이 묻는 것과 문서가 답하는 것이 같은 내용인지 판단
+   - 단순 키워드 매칭이 아닌 의미적 일치 여부 확인
 
-**Step 2: 답변 형식**
-1. **첫 문장은 반드시 "예" 또는 "아니요"로 명확히 시작 (한국어로!)**
-2. 문서에서 "cannot", "can not", "unable to", "prohibited" 발견 → **"아니요"로 답변**
-3. 법적 권한 질문 시 권한의 주체 명확히 구분:
-   - "Congress determines" → FDA 권한 없음 → "아니요"
-   - "statutory", "by law" → 법으로 정해짐 → "아니요"
-4. 예외나 추가 설명은 **두 번째 문장부터** 제공
+3. **첫 문장은 "예" 또는 "아니요"로 명확히 시작하세요**
+   - 애매한 표현 금지
+   - 한국어로 답변 시 "예/아니요" 사용 (Yes/No 아님)
 
-**답변 전략:**
-1. **질문 분해**: "Can FDA [VERB] [OBJECT]?"
-   - VERB 파악: add, change, approve, require, determine 등
-   - OBJECT 파악: list, allergens, additives, products 등
+**예시로 배우기:**
 
-2. **문서에서 우선순위 검색**:
-   - 1순위: "cannot [VERB] [OBJECT]" (직접 부정)
-   - 2순위: "Congress/statutory determines" (권한 주체)
-   - 3순위: "can [OTHER_VERB]" (다른 권한 - 주의!)
+예시 1:
+Q: "Can FDA add allergens to the list?"
+문서: "FDA cannot alter the statutory list. Congress must amend the law."
+분석: 질문 주어(FDA) = 문서 주어(FDA), "cannot" 발견
+A: "아니요, FDA는 목록에 알레르겐을 추가할 수 없습니다. 의회가 법을 개정해야 합니다."
 
-3. **답변 형식 (한국어로!):**
-   - "cannot" 발견 → "아니요, FDA는 [VERB] [OBJECT]할 수 없습니다."
-   - "Congress determines" → "아니요, [OBJECT]는 의회가 결정합니다."
-   - 긍정 권한만 있을 경우 → 질문과 정확히 일치하는지 확인!
+예시 2:
+Q: "그러면 추가 권한은 의회에게만 있나요?"
+문서: "FDA cannot alter... Congress must amend the law."
+분석: 질문 주어(의회) ≠ 문서 부정 주어(FDA), 문서에 "Congress must" 발견
+A: "예, 주요 알레르겐 목록 변경 권한은 의회에게만 있습니다."
+(주의: 문서에 "cannot"이 있어도, FDA에 대한 부정이므로 의회 질문엔 "예")
 
-**주의:**
-- "can do X" 발견 시 → X와 질문의 VERB가 동일한지 확인
-- 다른 동사면 별개 권한! (예: "add to list" ≠ "require labeling")
+예시 3:
+Q: "Is FDA required to inspect?"
+문서: "FDA must inspect all facilities."
+분석: 질문 주어(FDA) = 문서 주어(FDA), 긍정 의무("must")
+A: "예, FDA는 모든 시설을 검사해야 합니다."
 
-**내용 규칙:**
-1. 질문의 핵심 개념을 정확히 파악 (VERB + OBJECT 분석)
-2. **"cannot"과 "can"이 같이 있으면:**
-   - 질문과 일치하는 VERB 찾기
-   - "cannot [VERB]" → 핵심 답변!
-   - "can [OTHER_VERB]" → 별도 권한 (보충 정보)
-3. **문서에 리스트나 항목 나열이 있으면 반드시 모두 포함**
-4. 구체적 수치, 규정 번호, 법 조항 포함
+예시 4:
+Q: "제조업체가 승인할 수 있나요?"
+문서: "Only FDA can approve. Manufacturers cannot approve."
+분석: 질문 주어(제조업체) = 문서 부정 주어(Manufacturers)
+A: "아니요, 제조업체는 승인할 수 없습니다. FDA만 승인할 수 있습니다."
+
+**답변 체크리스트:**
+✓ 질문의 주어와 문서의 주어가 일치하는가?
+✓ 질문이 묻는 행위와 문서의 행위가 같은가?
+✓ "예/아니요"가 질문에 논리적으로 맞는가?
+✓ 답변 내용이 첫 문장의 "예/아니요"와 일치하는가?
 
 **금지 사항:**
-❌ **5W1H 질문에 "예/아니요"로 답변** (가장 중요!)
-❌ 질문의 VERB와 다른 VERB로 "예" 답변 (동사 불일치)
-❌ 모순되는 표현 ("할 수 있습니다. 하지만 할 수 없습니다")
-❌ Yes/No 질문에 애매한 답변 ("경우에 따라..." 등)
-❌ 첫 문장에서 긍정, 두 번째에서 부정 (혼란)
-❌ "Yes", "No" 같은 영어 사용 (Yes/No 질문일 때는 "예", "아니요"로!)
+❌ 키워드만 보고 기계적으로 답변 (예: "cannot" 발견 → 무조건 "아니요")
+❌ 질문의 주어를 무시하고 답변
+❌ 모순되는 답변 ("아니요, ~할 수 있습니다" 또는 "예, ~할 수 없습니다")
+❌ 5W1H 질문에 "예/아니요"로 답변
 
 **Citation 규칙:**
 - 각 주장 뒤에 [1], [2] 형식으로 출처 번호 표시
@@ -1231,68 +1287,58 @@ Agent가 추가 수집한 정보:
 - ✅ 올바름: "FDA의 전자 제출 시스템(ESG)을 통해 제출해야 합니다."
 
 **2) Yes/No 질문 (Can/Does/Is/Will):**
-질문이 Yes/No 질문("Can...", "Does...", "Is...", "Will..." 등)일 경우:
 
-**Step 0: 질문의 핵심 행위 파악**
-- "add to the list" = "alter the list" = "change the list" = "modify the statutory list"
-  → 이것은 statutory list 변경을 의미!
-- "require labeling" ≠ "add to the list" (완전히 다른 권한)
+**핵심 원칙:**
+1. **질문의 주어를 정확히 파악하세요**
+   - 질문 주어와 문서 주어가 일치하는지 확인
+   - 주어가 다르면 답도 달라질 수 있음
 
-**Step 1: 문서에서 직접 대응하는 키워드 우선 검색**
-- 질문: "add/alter/change the list" → 문서: "cannot alter the statutory list" ✅
-- **"cannot"이 있으면 무조건 "아니요"!** (다른 긍정 문장 무시)
-- **Agent가 잘못 수집했더라도, 문서의 "cannot"을 우선하세요!**
+2. **질문과 문서의 의미가 일치하는지 확인하세요**
+   - 질문이 묻는 것과 문서가 답하는 것이 같은 내용인지 판단
+   - 단순 키워드 매칭이 아닌 의미적 일치 여부 확인
 
-**Step 2: 답변 형식**
-1. **첫 문장은 반드시 "예" 또는 "아니요"로 명확히 시작 (한국어로!)**
-2. 문서에서 "cannot", "can not", "unable to", "prohibited" 발견 → **"아니요"로 답변**
-3. 법적 권한 질문 시 권한의 주체 명확히 구분:
-   - "Congress determines" → FDA 권한 없음 → "아니요"
-   - "statutory", "by law" → 법으로 정해짐 → "아니요"
-4. 예외나 추가 설명은 **두 번째 문장부터** 제공
+3. **첫 문장은 "예" 또는 "아니요"로 명확히 시작하세요**
+   - 애매한 표현 금지
+   - 한국어로 답변 시 "예/아니요" 사용 (Yes/No 아님)
 
-**답변 전략 (문서 우선!):**
-1. **질문 분해**: "Can FDA [VERB] [OBJECT]?"
-   - VERB 파악: add, change, approve, require, determine 등
-   - OBJECT 파악: list, allergens, additives, products 등
+**예시로 배우기:**
 
-2. **문서에서 우선순위 검색 (Agent 정보보다 우선!)**:
-   - 1순위: "cannot [VERB] [OBJECT]" (직접 부정) → **이것이 답!**
-   - 2순위: "Congress/statutory determines" (권한 주체)
-   - 3순위: "can [OTHER_VERB]" (다른 권한 - 주의!)
-   - Agent 정보는 참고만, 문서가 진실!
+예시 1:
+Q: "Can FDA add allergens to the list?"
+문서: "FDA cannot alter the statutory list. Congress must amend the law."
+분석: 질문 주어(FDA) = 문서 주어(FDA), "cannot" 발견
+A: "아니요, FDA는 목록에 알레르겐을 추가할 수 없습니다. 의회가 법을 개정해야 합니다."
 
-3. **답변 형식 (한국어로!):**
-   - 문서에 "cannot" 발견 → "아니요, FDA는 [VERB] [OBJECT]할 수 없습니다."
-   - 문서에 "Congress determines" → "아니요, [OBJECT]는 의회가 결정합니다."
-   - 긍정 권한만 있을 경우 → 질문과 정확히 일치하는지 확인!
+예시 2:
+Q: "그러면 추가 권한은 의회에게만 있나요?"
+문서: "FDA cannot alter... Congress must amend the law."
+분석: 질문 주어(의회) ≠ 문서 부정 주어(FDA), 문서에 "Congress must" 발견
+A: "예, 주요 알레르겐 목록 변경 권한은 의회에게만 있습니다."
+(주의: 문서에 "cannot"이 있어도, FDA에 대한 부정이므로 의회 질문엔 "예")
 
-4. **Agent 정보 처리**:
-   - Agent가 "예"라고 해도 → 문서에 "cannot" 있으면 → "아니요"!
-   - Agent가 애매하게 답해도 → 문서의 "cannot" 우선!
+예시 3:
+Q: "Is FDA required to inspect?"
+문서: "FDA must inspect all facilities."
+분석: 질문 주어(FDA) = 문서 주어(FDA), 긍정 의무("must")
+A: "예, FDA는 모든 시설을 검사해야 합니다."
 
-**주의:**
-- "can do X" 발견 시 → X와 질문의 VERB가 동일한지 확인
-- 다른 동사면 별개 권한! (예: "add to list" ≠ "require labeling")
+예시 4:
+Q: "제조업체가 승인할 수 있나요?"
+문서: "Only FDA can approve. Manufacturers cannot approve."
+분석: 질문 주어(제조업체) = 문서 부정 주어(Manufacturers)
+A: "아니요, 제조업체는 승인할 수 없습니다. FDA만 승인할 수 있습니다."
 
-**내용 규칙:**
-1. 질문의 핵심 개념을 정확히 파악 (VERB + OBJECT 분석)
-2. **"cannot"과 "can"이 같이 있으면:**
-   - 질문과 일치하는 VERB 찾기
-   - "cannot [VERB]" → 핵심 답변!
-   - "can [OTHER_VERB]" → 별도 권한 (보충 정보)
-3. **문서에 리스트나 항목 나열이 있으면 반드시 모두 포함**
-4. 구체적 수치, 규정 번호, 법 조항 포함
-5. **Agent 정보보다 문서 증거가 우선!**
+**답변 체크리스트:**
+✓ 질문의 주어와 문서의 주어가 일치하는가?
+✓ 질문이 묻는 행위와 문서의 행위가 같은가?
+✓ "예/아니요"가 질문에 논리적으로 맞는가?
+✓ 답변 내용이 첫 문장의 "예/아니요"와 일치하는가?
 
 **금지 사항:**
-❌ **5W1H 질문에 "예/아니요"로 답변** (가장 중요!)
-❌ 질문의 VERB와 다른 VERB로 "예" 답변 (동사 불일치)
-❌ 모순되는 표현 ("할 수 있습니다. 하지만 할 수 없습니다")
-❌ Yes/No 질문에 애매한 답변 ("경우에 따라..." 등)
-❌ 첫 문장에서 긍정, 두 번째에서 부정 (혼란)
-❌ Agent가 "예"라고 해도, 문서에 "cannot"이 있으면 "아니요"! (문서 우선)
-❌ "Yes", "No" 같은 영어 사용 (Yes/No 질문일 때는 "예", "아니요"로!)
+❌ 키워드만 보고 기계적으로 답변 (예: "cannot" 발견 → 무조건 "아니요")
+❌ 질문의 주어를 무시하고 답변
+❌ 모순되는 답변 ("아니요, ~할 수 있습니다" 또는 "예, ~할 수 없습니다")
+❌ 5W1H 질문에 "예/아니요"로 답변
 
 **Citation 규칙:**
 - 각 주장 뒤에 [1], [2] 형식으로 출처 번호 표시
@@ -1448,7 +1494,7 @@ Agent가 추가 수집한 정보:
             if len(self.search_results_cache) > 2:
                 self.search_results_cache.pop(0)
             
-            # 🆕 후속 질문 처리
+            # 🆕 후속 질문 처리 (chat()과 동일한 로직)
             followup_indicators = ["그러면", "그럼", "그것", "그거", "그걸", "누구", "어디", "왜", "언제", 
                                    "then", "who", "where", "why", "when", "which", "what about"]
             is_followup = any(indicator in query.lower() for indicator in followup_indicators)
@@ -1458,11 +1504,42 @@ Agent가 추가 수집한 정보:
                 previous_results = self.search_results_cache[-2]['results']
                 current_results = ranked_results
                 
+                # 🆕 이전 검색에서 사용한 컬렉션 재사용
+                previous_collections = list(set(r['collection'] for r in previous_results))
+                if previous_collections != collections:
+                    print(f"  🔄 이전 컬렉션 재사용: {previous_collections}")
+                    collections = list(set(collections + previous_collections))
+                
+                # 🆕 권한 관련 질문 감지
+                authority_keywords = ["권한", "누구", "who", "can", "cannot", "authority", "determines"]
+                is_authority_question = any(kw in query.lower() for kw in authority_keywords)
+                
+                # 🆕 이전 결과에서 고품질 문서 추출 (score > 0.5로 낮춤)
+                high_quality_docs = [r for r in previous_results if r.get('score', 0) > 0.5]
+                
+                # 🆕 권한 질문이면 authority 키워드 포함 문서 우선
+                if is_authority_question:
+                    authority_docs = [
+                        r for r in previous_results 
+                        if any(kw in r.get('text', '').lower() for kw in 
+                               ["authority", "congress", "statutory", "cannot", "must", "legislative"])
+                    ]
+                    if authority_docs:
+                        print(f"  🏛️ 권한 관련 문서 발견: {len(authority_docs)}개")
+                        # authority 문서를 최우선으로
+                        high_quality_docs = authority_docs + [d for d in high_quality_docs if d not in authority_docs]
+                
+                if high_quality_docs:
+                    print(f"  ⭐ 이전 고품질 문서: {len(high_quality_docs)}개 (점수 > 0.5)")
+                    for doc in high_quality_docs[:5]:
+                        print(f"     - {doc.get('title', 'N/A')[:50]}... (점수: {doc.get('score', 0):.3f})")
+                
+                # 🆕 이전 결과에서 법 조항/섹션 추출
                 legal_references = self._extract_legal_references(previous_results)
                 if legal_references:
                     print(f"  📜 이전 문서에서 추출된 법 조항: {', '.join(legal_references[:3])}")
                     
-                    if len(current_results) < 2:
+                    if len(current_results) < 3:
                         print(f"  🔍 현재 결과 부족({len(current_results)}개) - 법 조항으로 재검색")
                         additional_query = " ".join(legal_references[:2])
                         additional_results = orchestrator.parallel_search(
@@ -1472,19 +1549,36 @@ Agent가 추가 수집한 정보:
                         )
                         additional_ranked = orchestrator.merge_and_rank(additional_results)
                         print(f"  ✅ 추가 검색 완료: {len(additional_ranked)}개 결과")
-                        current_results = list(current_results) + list(additional_ranked[:3])
+                        current_results = list(current_results) + list(additional_ranked[:5])
                 
-                merged_results = list(previous_results[:3]) + list(current_results)
-                seen_texts = set()
+                # 🆕 병합 전략: 고품질 문서 우선 + 이전 상위 결과 더 많이 + 현재 결과
+                merged_results = []
+                # 고품질 문서 최대 5개
+                merged_results.extend(high_quality_docs[:5])
+                
+                # 이전 결과에서 더 많이 가져오기 (5개 → 8개)
+                for r in previous_results[:8]:
+                    if r not in merged_results:
+                        merged_results.append(r)
+                        if len(merged_results) >= 8:
+                            break
+                
+                merged_results.extend(current_results)
+                
+                # 중복 제거 (더 관대한 기준)
+                seen_keys = set()
                 unique_results = []
                 for r in merged_results:
-                    text_key = r.get('text', '')[:100]
-                    if text_key not in seen_texts:
-                        seen_texts.add(text_key)
+                    title = r.get('title', '')[:50]
+                    text = r.get('text', '')[:50]  # 100 → 50으로 변경 (더 많은 유사 문서 허용)
+                    key = f"{title}|{text}"
+                    
+                    if key not in seen_keys:
+                        seen_keys.add(key)
                         unique_results.append(r)
                 
-                ranked_results = unique_results[:10]
-                print(f"  ✅ 병합 완료: 이전 {len(previous_results[:3])}개 + 현재 {len(current_results)}개 → 총 {len(ranked_results)}개")
+                ranked_results = unique_results[:12]  # 10 → 12개로 증가
+                print(f"  ✅ 병합 완료: 고품질 {len(high_quality_docs[:5])}개 + 이전 {min(8-len(high_quality_docs[:5]), len(previous_results[:8]))}개 + 현재 {len(current_results)}개 → 총 {len(ranked_results)}개")
             
             # 4. 평가 시작 이벤트
             yield {
