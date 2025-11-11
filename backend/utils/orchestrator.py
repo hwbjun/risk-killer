@@ -3,7 +3,7 @@ import asyncio
 from typing import List, Dict, Any, Optional
 import time
 from utils.qdrant_client import QdrantService
-from utils.bm25_search import BM25SearchService  
+from utils.elasticsearch_client import ElasticsearchService  # 🔄 BM25SearchService → ElasticsearchService
 from utils.hybrid_search import HybridSearchRanker
 from utils.reranker import CrossEncoderReranker, AuthorityQuestionBooster, RecencyBooster
 from concurrent.futures import ThreadPoolExecutor
@@ -41,19 +41,19 @@ class GlobalServices:
                 self.qdrant_service = QdrantService()
                 print("✅ Qdrant 연결 완료")
                 
-                # BM25 서비스
-                self.bm25_service = BM25SearchService()
-                print("✅ BM25 서비스 로드 완료")
+                # Elasticsearch 서비스 (BM25 내장)
+                self.es_service = ElasticsearchService()
+                print("✅ Elasticsearch 서비스 연결 완료")
                 
                 # Reranker (한 번만 로드 - 가장 무거움)
                 print("🔧 Cross-Encoder Reranker 초기화 중: cross-encoder/ms-marco-MiniLM-L-6-v2")
                 self.reranker = CrossEncoderReranker(model_name='cross-encoder/ms-marco-MiniLM-L-6-v2')
                 print("✅ Reranker 초기화 완료")
                 
-                # Hybrid Ranker
+                # Hybrid Ranker (벡터 60% + BM25 40%)
                 self.hybrid_ranker = HybridSearchRanker(
-                    vector_weight=0.5,
-                    bm25_weight=0.5
+                    vector_weight=0.6,
+                    bm25_weight=0.4
                 )
                 
                 self._initialized = True
@@ -69,7 +69,7 @@ _global_services = GlobalServices()
 
 
 class SimpleOrchestrator:
-    """순수 검색 전용 오케스트레이터 - 하이브리드 검색 지원 (Phase 1 최적화)"""
+    """순수 검색 전용 오케스트레이터 - 하이브리드 검색 지원 (Qdrant + Elasticsearch)"""
     
     def __init__(self):
         # 전역 서비스 초기화 (처음 한 번만 실행됨)
@@ -77,7 +77,7 @@ class SimpleOrchestrator:
         
         # 전역 서비스 참조 (복사 아님!)
         self.qdrant_service = _global_services.qdrant_service
-        self.bm25_service = _global_services.bm25_service
+        self.es_service = _global_services.es_service  # 🔄 bm25_service → es_service
         self.hybrid_ranker = _global_services.hybrid_ranker
         self.reranker = _global_services.reranker
         
@@ -105,7 +105,7 @@ class SimpleOrchestrator:
     
     def parallel_search(self, query: str, collections: List[str], decomposition: dict = None) -> Dict[str, Any]:
         """
-        하이브리드 검색: 벡터 + BM25 병합
+        하이브리드 검색: 벡터(Qdrant) + BM25(Elasticsearch) 병합
         Phase 1 최적화: limit 조정 (5개 → 3개)
         """
         start_time = time.time()
@@ -136,7 +136,7 @@ class SimpleOrchestrator:
                 collection,
                 original_query,  # BM25용 (원본)
                 collection_query,  # 벡터용 (증강)
-                SEARCH_LIMIT  # 🚀 3개로 제한
+                SEARCH_LIMIT
             )
             futures.append((collection, future))
         
@@ -170,10 +170,10 @@ class SimpleOrchestrator:
             collection: str, 
             original_query: str,
             augmented_query: str,
-            limit: int = 5  # 기본값 5
+            limit: int = 5
         ) -> List[Dict]:
         """
-        단일 컬렉션에 대해 벡터 + BM25 하이브리드 검색
+        단일 컬렉션에 대해 벡터(Qdrant) + BM25(Elasticsearch) 하이브리드 검색
         """
         try:
             # 1. 벡터 검색 (증강 쿼리)
@@ -197,8 +197,8 @@ class SimpleOrchestrator:
                 for r in vector_results
             ]
             
-            # 2. BM25 검색 (원본 쿼리)
-            bm25_results = self.bm25_service.search(collection, original_query, limit)
+            # 2. BM25 검색 (원본 쿼리) - Elasticsearch 사용
+            bm25_results = self.es_service.search(collection, original_query, limit)
             
             # 3. 하이브리드 병합
             hybrid_results = self.hybrid_ranker.merge_results(
@@ -243,7 +243,7 @@ class SimpleOrchestrator:
         """
         하이브리드 검색 결과를 병합하고 Reranking
         """
-        MIN_SCORE = 0.20  # 하이브리드 점수 기준 (0.30 → 0.25 → 0.20으로 낮춤)
+        MIN_SCORE = 0.20  # 하이브리드 점수 기준
         QUOTA_PER_COLLECTION = 5  # 컬렉션당 5개
         
         final = []
@@ -265,7 +265,7 @@ class SimpleOrchestrator:
                     "hybrid_score": item.get('hybrid_score', 0),
                     "vector_score": item.get('vector_score', 0),
                     "bm25_score": item.get('bm25_score', 0),
-                    "text": item.get('text', '')[:5000],  # 🚀 10000 → 5000자로 축소
+                    "text": item.get('text', '')[:5000],
                     "title": item.get('title', ''),
                     "url": item.get('url', '')
                 })

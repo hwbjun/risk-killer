@@ -6,21 +6,53 @@ import os
 import json
 import re
 import time
+import logging
 from typing import List, Dict
 from llama_index.core.agent import ReActAgent
 from llama_index.llms.openai import OpenAI
 from llama_index.core import Settings
 from llama_index.embeddings.openai import OpenAIEmbedding
+from llama_index.core.callbacks import CallbackManager, LlamaDebugHandler
 
 from utils.tools import create_fda_tools
 from utils.memory import ConversationMemory, ChatMessage
 from utils.collection_strategy import COLLECTION_STRATEGY
 
+# ReAct Agent 상세 로깅을 위한 설정
+# 기본 로깅 레벨은 INFO로 설정 (DEBUG는 너무 많음)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# LlamaIndex ReAct Agent만 DEBUG로 설정 (Thought, Action, Observation 로그를 위해)
+logging.getLogger("llama_index.agent.react").setLevel(logging.DEBUG)
+
+# 불필요한 DEBUG 로그 제거
+logging.getLogger("openai").setLevel(logging.WARNING)  # OpenAI HTTP 요청/응답 로그 제거
+logging.getLogger("httpx").setLevel(logging.WARNING)  # HTTP 요청 로그 제거
+logging.getLogger("httpcore").setLevel(logging.WARNING)  # HTTP 코어 로그 제거
+logging.getLogger("llama_index.core.indices").setLevel(logging.WARNING)  # LlamaIndex 인덱스 상세 로그 제거
+logging.getLogger("sse_starlette").setLevel(logging.WARNING)  # SSE 디버그 로그 제거
+
 class FDAAgent:
     def __init__(self):
         # LlamaIndex 전역 설정 (rag_engine과 동일하게 설정)
         Settings.embed_model = OpenAIEmbedding(model="text-embedding-3-small", api_key=os.getenv("OPENAI_API_KEY"))
-        Settings.llm = OpenAI(model="gpt-4-turbo", temperature=0, api_key=os.getenv("OPENAI_API_KEY"))
+        Settings.llm = OpenAI(
+            model="gpt-4o", 
+            temperature=0, 
+            api_key=os.getenv("OPENAI_API_KEY"),
+            max_tokens=1200  
+        )
+
+        self.response_llm = OpenAI(
+            model="gpt-4-turbo",
+            temperature=0,
+            api_key=os.getenv("OPENAI_API_KEY"),
+            max_tokens=1200
+        )
 
         # 1. 모든 FDA 컬렉션을 '전문가 툴'로 변환
         self.fda_tools = create_fda_tools()
@@ -176,12 +208,17 @@ class FDAAgent:
 """
 
         # 2. ReAct 에이전트 생성 (context 추가)
+        # ReAct Agent 상세 로깅을 위한 콜백 매니저
+        llama_debug = LlamaDebugHandler(print_trace_on_end=True)
+        callback_manager = CallbackManager([llama_debug])
+        
         self.agent = ReActAgent.from_tools(
             tools=self.fda_tools,
             llm=Settings.llm,
             system_prompt=system_prompt,
             max_iterations=10,
             verbose=True,
+            callback_manager=callback_manager,
             # ✅ 핵심 추가: context로 도구 강제 사용
             context="""You MUST use tools for FDA-related queries.
 NEVER answer with "(Implicit) I can answer without tools".
@@ -792,8 +829,23 @@ Use the most relevant collections based on the product characteristics above.
                 
                 # Agent로 정보 수집만
                 print("🔍 Agent 정보 수집 시작...")
-                agent_response = self.agent.chat(full_query)
-                collected_info = str(agent_response)
+                print("="*80)
+                print("🤖 ReAct Agent 실행 시작 (상세 로그 활성화)")
+                print("="*80)
+                
+                try:
+                    agent_response = self.agent.chat(full_query)
+                    collected_info = str(agent_response)
+                    
+                    print("="*80)
+                    print("✅ ReAct Agent 실행 완료")
+                    print(f"📝 수집된 정보 길이: {len(collected_info)}자")
+                    print("="*80)
+                except Exception as e:
+                    print(f"❌ ReAct Agent 실행 중 오류: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
                 
                 # 병렬 검색 + Agent 정보를 합쳐서 최종 답변 생성
                 print("✅ 정보 수집 완료 - 최종 답변 생성")
@@ -1014,14 +1066,21 @@ Question: "{query}"
 4. FSVP 검증 절차
 5. 실무 체크리스트
 
-❗️핵심 규칙:
-- 중요한 정보나 규정을 언급할 때마다 해당하는 출처 번호를 [1], [2] 형태로 문장 끝에 삽입하세요.
+**🚨 Citation 규칙 (필수! 반드시 준수!):**
+- **답변의 모든 주요 주장 뒤에 반드시 [1], [2] 형식으로 출처 번호를 표시하세요.**
 - 여러 출처를 참고한 경우 [1][2] 처럼 연속으로 표시하세요.
-- 반드시 [출처 N] 정보를 확인하고 정확한 번호를 사용하세요.
+- **출처 번호 없이는 답변을 완료하지 마세요.**
+- **각 문단마다 최소 1개 이상의 출처 번호가 있어야 합니다.**
 
-예시:
+**Citation 예시 (반드시 이 형식을 따르세요):**
 - 새우는 주요 알레르기 유발 물질로 표시해야 합니다[1].
 - 21 CFR 1250.26과 Import Alert 16-50을 준수해야 합니다[2][3].
+- 주요 식품 알레르겐은 9가지입니다[1][2]. 이들은 우유, 계란, 생선, 갑각류 해산물, 견과류, 땅콩, 밀, 콩, 참깨입니다[1][2].
+
+**Citation 체크리스트 (답변 완료 전 확인):**
+✓ 답변의 각 문단에 출처 번호가 있는가?
+✓ 주요 규정이나 법 조항을 언급할 때 출처 번호가 있는가?
+✓ 통계나 구체적 정보를 제시할 때 출처 번호가 있는가?
 
 **🌏 언어 규칙 (최우선!):**
 - 질문이 영어든 한국어든 상관없이 **무조건 한국어로만 답변하세요.**
@@ -1069,13 +1128,23 @@ Question: "{query}"
    - 애매한 표현 금지
    - 한국어로 답변 시 "예/아니요" 사용 (Yes/No 아님)
 
+**🚨 답변 길이 규칙 (중요!):**
+- **반드시 상세하고 포괄적으로 답변하세요.**
+- "예/아니요"만으로 답변하지 마세요. 항상 이유와 배경을 설명하세요.
+- 관련 법 조항, 규정 번호, 구체적인 절차를 포함하세요.
+- 최소 3-5문단 이상의 상세한 답변을 작성하세요.
+
 **예시로 배우기:**
 
 예시 1:
 Q: "Can FDA add allergens to the list?"
 문서: "FDA cannot alter the statutory list. Congress must amend the law."
 분석: 질문 주어(FDA) = 문서 주어(FDA), "cannot" 발견
-A: "아니요, FDA는 목록에 알레르겐을 추가할 수 없습니다. 의회가 법을 개정해야 합니다."
+A: "아니요, FDA는 목록에 알레르겐을 추가할 수 없습니다. 
+
+FD&C 법(Federal Food, Drug, and Cosmetic Act)의 제 201(qq) 조항에 따르면, 주요 식품 알레르겐 목록은 법률로 정해진 것이며, FDA는 이 법정 목록(statutory list)을 변경할 권한이 없습니다. 현재 9가지 주요 식품 알레르겐(우유, 계란, 생선, 갑각류 해산물, 견과류, 땅콩, 밀, 콩, 참깨)은 의회(Congress)가 법을 개정해야만 변경할 수 있습니다.
+
+다만, FDA는 주요 알레르겐으로 지정되지 않은 다른 식품 알레르겐에 대해서는, 적절한 경우 라벨링을 요구할 수 있는 권한을 가지고 있습니다. 이는 목록 자체를 변경하는 것과는 별개의 권한입니다."
 
 예시 2:
 Q: "그러면 추가 권한은 의회에게만 있나요?"
@@ -1112,13 +1181,20 @@ A: "아니요, 제조업체는 승인할 수 없습니다. FDA만 승인할 수 
 - 각 주장 뒤에 [1], [2] 형식으로 출처 번호 표시
 - 여러 출처는 [1][2] 처럼 연속으로 표시
 
+**📏 답변 길이 및 상세도 (필수!):**
+- **최소 200-400자 이상의 상세한 답변을 작성하세요.**
+- "예/아니요"만으로 끝내지 마세요. 항상 배경, 이유, 법적 근거를 포함하세요.
+- 관련 규정 번호(예: 21 CFR XXX, Section 201(qq))를 구체적으로 명시하세요.
+- 가능한 경우 실무적인 예시나 추가 정보를 포함하세요.
+- 간결함보다는 **정확성과 완전성**을 우선하세요.
+
 **🌏 언어 규칙 (최우선!):**
 - 질문이 영어든 한국어든 상관없이 **무조건 한국어로만 답변하세요.**
 - 답변에 영어를 섞지 마세요. 모든 내용을 한국어로 작성하세요.
 - 예외 없이 100% 한국어로 답변하세요.
 """
         
-        response = Settings.llm.complete(prompt)
+        response = self.response_llm.complete(prompt)
         
         print(f"\n📋 Citations 생성 완료:")
         print(f"  - 총 {len(citations)}개 citations 생성")
@@ -1223,14 +1299,21 @@ Agent가 추가 수집한 정보:
 4. FSVP 검증 절차
 5. 실무 체크리스트 (5개 이상)
 
-❗️핵심 규칙:
-- 중요한 정보나 규정을 언급할 때마다 해당하는 출처 번호를 [1], [2] 형태로 문장 끝에 삽입하세요.
+**🚨 Citation 규칙 (필수! 반드시 준수!):**
+- **답변의 모든 주요 주장 뒤에 반드시 [1], [2] 형식으로 출처 번호를 표시하세요.**
 - 여러 출처를 참고한 경우 [1][2] 처럼 연속으로 표시하세요.
-- 반드시 [출처 N] 정보를 확인하고 정확한 번호를 사용하세요.
+- **출처 번호 없이는 답변을 완료하지 마세요.**
+- **각 문단마다 최소 1개 이상의 출처 번호가 있어야 합니다.**
 
-예시:
+**Citation 예시 (반드시 이 형식을 따르세요):**
 - 새우는 주요 알레르기 유발 물질로 표시해야 합니다[1].
 - 21 CFR 1250.26과 Import Alert 16-50을 준수해야 합니다[2][3].
+- 주요 식품 알레르겐은 9가지입니다[1][2]. 이들은 우유, 계란, 생선, 갑각류 해산물, 견과류, 땅콩, 밀, 콩, 참깨입니다[1][2].
+
+**Citation 체크리스트 (답변 완료 전 확인):**
+✓ 답변의 각 문단에 출처 번호가 있는가?
+✓ 주요 규정이나 법 조항을 언급할 때 출처 번호가 있는가?
+✓ 통계나 구체적 정보를 제시할 때 출처 번호가 있는가?
 
 **🌏 언어 규칙 (최우선!):**
 - 질문이 영어든 한국어든 상관없이 **무조건 한국어로만 답변하세요.**
@@ -1301,13 +1384,23 @@ Agent가 추가 수집한 정보:
    - 애매한 표현 금지
    - 한국어로 답변 시 "예/아니요" 사용 (Yes/No 아님)
 
+**🚨 답변 길이 규칙 (중요!):**
+- **반드시 상세하고 포괄적으로 답변하세요.**
+- "예/아니요"만으로 답변하지 마세요. 항상 이유와 배경을 설명하세요.
+- 관련 법 조항, 규정 번호, 구체적인 절차를 포함하세요.
+- 최소 3-5문단 이상의 상세한 답변을 작성하세요.
+
 **예시로 배우기:**
 
 예시 1:
 Q: "Can FDA add allergens to the list?"
 문서: "FDA cannot alter the statutory list. Congress must amend the law."
 분석: 질문 주어(FDA) = 문서 주어(FDA), "cannot" 발견
-A: "아니요, FDA는 목록에 알레르겐을 추가할 수 없습니다. 의회가 법을 개정해야 합니다."
+A: "아니요, FDA는 목록에 알레르겐을 추가할 수 없습니다. 
+
+FD&C 법(Federal Food, Drug, and Cosmetic Act)의 제 201(qq) 조항에 따르면, 주요 식품 알레르겐 목록은 법률로 정해진 것이며, FDA는 이 법정 목록(statutory list)을 변경할 권한이 없습니다. 현재 9가지 주요 식품 알레르겐(우유, 계란, 생선, 갑각류 해산물, 견과류, 땅콩, 밀, 콩, 참깨)은 의회(Congress)가 법을 개정해야만 변경할 수 있습니다.
+
+다만, FDA는 주요 알레르겐으로 지정되지 않은 다른 식품 알레르겐에 대해서는, 적절한 경우 라벨링을 요구할 수 있는 권한을 가지고 있습니다. 이는 목록 자체를 변경하는 것과는 별개의 권한입니다."
 
 예시 2:
 Q: "그러면 추가 권한은 의회에게만 있나요?"
@@ -1340,9 +1433,21 @@ A: "아니요, 제조업체는 승인할 수 없습니다. FDA만 승인할 수 
 ❌ 모순되는 답변 ("아니요, ~할 수 있습니다" 또는 "예, ~할 수 없습니다")
 ❌ 5W1H 질문에 "예/아니요"로 답변
 
-**Citation 규칙:**
-- 각 주장 뒤에 [1], [2] 형식으로 출처 번호 표시
-- 여러 출처는 [1][2] 처럼 연속으로 표시
+**🚨 Citation 규칙 (필수! 반드시 준수!):**
+- **답변의 모든 주요 주장 뒤에 반드시 [1], [2] 형식으로 출처 번호를 표시하세요.**
+- 여러 출처를 참고한 경우 [1][2] 처럼 연속으로 표시하세요.
+- **출처 번호 없이는 답변을 완료하지 마세요.**
+- **각 문단마다 최소 1개 이상의 출처 번호가 있어야 합니다.**
+
+**Citation 예시 (반드시 이 형식을 따르세요):**
+- 주요 식품 알레르겐은 9가지입니다[1][2]. 이들은 우유, 계란, 생선, 갑각류 해산물, 견과류, 땅콩, 밀, 콩, 참깨입니다[1][2].
+- FDA는 법정 목록을 변경할 권한이 없습니다[1][3]. 의회(Congress)가 법을 개정해야만 변경 가능합니다[1][3].
+- 라벨링 요구사항은 21 CFR 117.3에 명시되어 있습니다[2][4].
+
+**Citation 체크리스트 (답변 완료 전 확인):**
+✓ 답변의 각 문단에 출처 번호가 있는가?
+✓ 주요 규정이나 법 조항을 언급할 때 출처 번호가 있는가?
+✓ 통계나 구체적 정보를 제시할 때 출처 번호가 있는가?
 
 **🌏 언어 규칙 (최우선!):**
 - 질문이 영어든 한국어든 상관없이 **무조건 한국어로만 답변하세요.**
@@ -1353,11 +1458,25 @@ A: "아니요, 제조업체는 승인할 수 없습니다. FDA만 승인할 수 
         print(f"\n🤖 LLM 호출 중... (프롬프트: {len(prompt)}자)")
         
         # 단일 LLM 호출로 최종 답변 생성
-        response = Settings.llm.complete(prompt)
+        response = self.response_llm.complete(prompt)
+        
+        # Citation 확인 및 경고
+        answer_text = response.text
+        import re
+        citation_pattern = r'\[\d+\]'
+        found_citations = re.findall(citation_pattern, answer_text)
         
         print(f"\n✅ 최종 답변 생성 완료!")
-        print(f"  - 답변 길이: {len(response.text)}자")
-        print(f"  - 답변 단어 수: {len(response.text.split())}단어")
+        print(f"  - 답변 길이: {len(answer_text)}자")
+        print(f"  - 답변 단어 수: {len(answer_text.split())}단어")
+        print(f"  - 발견된 Citation: {len(found_citations)}개")
+        
+        if len(found_citations) == 0:
+            print(f"\n⚠️ 경고: 답변에 Citation이 없습니다!")
+            print(f"  - 최소 {len(citations)}개의 출처가 있으므로 Citation을 추가해야 합니다.")
+            print(f"  - 답변 끝에 출처 정보를 추가하는 것을 고려하세요.")
+        elif len(found_citations) < len(citations) // 2:
+            print(f"\n⚠️ 경고: Citation이 부족합니다 (발견: {len(found_citations)}개, 출처: {len(citations)}개)")
         
         print(f"\n📋 Citations 생성 완료:")
         print(f"  - 총 {len(citations)}개 citations 생성")
@@ -1368,11 +1487,11 @@ A: "아니요, 제조업체는 승인할 수 없습니다. FDA만 승인할 수 
         print("\n" + "="*60)
         print("📄 최종 답변 내용:")
         print("="*60)
-        print(response.text)
+        print(answer_text)
         print("="*60 + "\n")
         
         return {
-            "content": response.text,
+            "content": answer_text,
             "citations": citations,
             "cfr_references": [],
             "sources": [c['title'] for c in citations[:5]],
@@ -1655,8 +1774,23 @@ A: "아니요, 제조업체는 승인할 수 없습니다. FDA만 승인할 수 
                 
                 # Agent로 정보 수집
                 print("🔍 Agent 정보 수집 시작...")
-                agent_response = self.agent.chat(full_query)
-                collected_info = str(agent_response)
+                print("="*80)
+                print("🤖 ReAct Agent 실행 시작 (상세 로그 활성화)")
+                print("="*80)
+                
+                try:
+                    agent_response = self.agent.chat(full_query)
+                    collected_info = str(agent_response)
+                    
+                    print("="*80)
+                    print("✅ ReAct Agent 실행 완료")
+                    print(f"📝 수집된 정보 길이: {len(collected_info)}자")
+                    print("="*80)
+                except Exception as e:
+                    print(f"❌ ReAct Agent 실행 중 오류: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
                 
                 yield {
                     "type": "status",

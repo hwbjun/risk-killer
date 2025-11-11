@@ -55,11 +55,12 @@ const MessageList = ({ messages, isTyping, isUsingSSE, elapsedTime, onGenerateCh
     return processedText;
   };
 
-  // 메시지 내용에서 [1], [2] 같은 citation을 찾아서 링크로 변환
+  // 메시지 내용에서 [1], [2] 또는 [출처 4] 같은 citation을 찾아서 링크로 변환
   const renderContentWithCitations = (content, citations) => {
     if (!content) return content;
     
-    const citationRegex = /\[(\d+)\]/g;
+    // [1], [2] 형식과 [출처 4] 형식 모두 매칭
+    const citationRegex = /\[(?:출처\s*)?(\d+)\]/g;
     const parts = [];
     let lastIndex = 0;
     let match;

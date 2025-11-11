@@ -49,7 +49,8 @@ const TypingMessage = ({ message, speed = 15, citations }) => {
   return (
     <div className="whitespace-pre-wrap">
       {(() => {
-        const citationRegex = /\[(\d+)\]/g;
+        // [1], [2] 형식과 [출처 4] 형식 모두 매칭
+        const citationRegex = /\[(?:출처\s*)?(\d+)\]/g;
         const parts = [];
         let lastIndex = 0;
         let match;

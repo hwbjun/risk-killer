@@ -1,19 +1,24 @@
 # utils/hybrid_search.py
 """
-하이브리드 검색: 벡터 + BM25 결합
+하이브리드 검색: 벡터(Qdrant) + BM25(Elasticsearch) 결합
 """
 from typing import List, Dict
 import numpy as np
 
 
 class HybridSearchRanker:
-    """벡터 검색과 BM25 검색 결과를 결합하는 랭커"""
+    """
+    벡터 검색(Qdrant)과 BM25 검색(Elasticsearch) 결과를 결합하는 랭커
     
-    def __init__(self, vector_weight: float = 0.5, bm25_weight: float = 0.5):
+    벡터 검색: 의미 기반 유사도
+    BM25 검색: 키워드 매칭 및 빈도 기반
+    """
+    
+    def __init__(self, vector_weight: float = 0.6, bm25_weight: float = 0.4):
         """
         Args:
-            vector_weight: 벡터 검색 가중치 (기본 0.7)
-            bm25_weight: BM25 검색 가중치 (기본 0.3)
+            vector_weight: 벡터 검색 가중치 (기본 0.6)
+            bm25_weight: BM25 검색 가중치 (기본 0.4)
         """
         self.vector_weight = vector_weight
         self.bm25_weight = bm25_weight
@@ -21,29 +26,36 @@ class HybridSearchRanker:
         assert abs(vector_weight + bm25_weight - 1.0) < 0.001, \
             "가중치 합은 1.0이어야 합니다"
     
-    def _normalize_bm25_scores(self, bm25_results: List[Dict]) -> List[Dict]:
+    def _normalize_scores(self, results: List[Dict], score_key: str = 'score') -> List[Dict]:
         """
-        BM25 점수를 0~1로 정규화
-        Min-Max Normalization 사용
+        점수를 0~1로 정규화 (Min-Max Normalization)
+        
+        Args:
+            results: 검색 결과 리스트
+            score_key: 점수 필드명
+        
+        Returns:
+            정규화된 결과
         """
-        if not bm25_results:
+        if not results:
             return []
         
-        scores = [r['score'] for r in bm25_results]
+        scores = [r[score_key] for r in results]
         min_score = min(scores)
         max_score = max(scores)
         
         # 모든 점수가 같은 경우
         if max_score - min_score < 0.001:
-            normalized = [{'normalized_score': 1.0, **r} for r in bm25_results]
-        else:
-            normalized = []
-            for r in bm25_results:
-                norm_score = (r['score'] - min_score) / (max_score - min_score)
-                normalized.append({
-                    'normalized_score': norm_score,
-                    **r
-                })
+            return [{'normalized_score': 1.0, **r} for r in results]
+        
+        # Min-Max 정규화
+        normalized = []
+        for r in results:
+            norm_score = (r[score_key] - min_score) / (max_score - min_score)
+            normalized.append({
+                'normalized_score': norm_score,
+                **r
+            })
         
         return normalized
     
@@ -54,28 +66,29 @@ class HybridSearchRanker:
         unique_key: str = 'text'
     ) -> List[Dict]:
         """
-        벡터와 BM25 검색 결과를 하이브리드 병합
+        벡터(Qdrant)와 BM25(Elasticsearch) 검색 결과를 하이브리드 병합
         
         Args:
-            vector_results: Qdrant 검색 결과 [{'score': 0.7, 'text': '...', ...}]
-            bm25_results: BM25 검색 결과 [{'score': 8.5, 'text': '...', ...}]
+            vector_results: Qdrant 벡터 검색 결과
+            bm25_results: Elasticsearch BM25 검색 결과
             unique_key: 중복 제거용 키 (기본 'text')
         
         Returns:
             병합된 결과 (하이브리드 점수로 재정렬)
         """
-        # BM25 점수 정규화
-        normalized_bm25 = self._normalize_bm25_scores(bm25_results)
+        # 각 결과 정규화
+        normalized_vector = self._normalize_scores(vector_results, 'score')
+        normalized_bm25 = self._normalize_scores(bm25_results, 'score')
         
         # 문서별 점수 맵 생성
         score_map = {}
         
         # 벡터 검색 결과 추가
-        for result in vector_results:
+        for result in normalized_vector:
             key = result.get(unique_key, '')
             if key:
                 score_map[key] = {
-                    'vector_score': result['score'],
+                    'vector_score': result['normalized_score'],
                     'bm25_score': 0.0,
                     'data': result
                 }
