@@ -19,11 +19,11 @@ embed_model = OpenAIEmbedding(
 query = "Can FDA add other allergens to the current list"
 query_vector = embed_model.get_text_embedding(query)
 
-results = client.search(
+results = client.query_points(
     collection_name="guidance",
-    query_vector=query_vector,
+    query=query_vector,
     limit=10
-)
+).points
 
 print("="*80)
 print("📄 전체 문서 내용 확인")

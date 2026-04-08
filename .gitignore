@@ -46,4 +46,5 @@ chroma_db/
 *.db
 
 # Cursor AI 설정 (각자 생성)
-.cursorrules
+.cursorrules.claude/ 
+*.whl 

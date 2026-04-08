@@ -22,6 +22,7 @@ services:
       - ELASTICSEARCH_HOST=${ELASTICSEARCH_HOST}
       - ELASTICSEARCH_USER=${ELASTICSEARCH_USER}
       - ELASTICSEARCH_PASSWORD=${ELASTICSEARCH_PASSWORD}
+      - PYTHONUNBUFFERED=1
     volumes:
       - ./backend:/app
     restart: unless-stopped

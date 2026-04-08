@@ -1,6 +1,6 @@
 # utils/qdrant_client.py
 from qdrant_client import QdrantClient
-from qdrant_client.models import Filter, SearchRequest
+from qdrant_client.models import Filter
 from openai import OpenAI
 import os
 from typing import List
@@ -28,12 +28,12 @@ class QdrantService:
         try:
             query_embedding = await self.get_embedding(query)
             
-            search_result = self.qdrant_client.search(
+            search_result = self.qdrant_client.query_points(
                 collection_name=collection_name,
-                query_vector=query_embedding,
+                query=query_embedding,
                 limit=limit
             )
-            return search_result
+            return search_result.points
         except Exception as e:
             print(f"Error searching {collection_name}: {e}")
             return []

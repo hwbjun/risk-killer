@@ -8,11 +8,11 @@ import re
 import time
 import logging
 from typing import List, Dict
-from llama_index.core.agent import ReActAgent
+from llama_index.core.agent.workflow import AgentWorkflow
 from llama_index.llms.openai import OpenAI
 from llama_index.core import Settings
 from llama_index.embeddings.openai import OpenAIEmbedding
-from llama_index.core.callbacks import CallbackManager, LlamaDebugHandler
+import asyncio
 
 from utils.tools import create_fda_tools
 from utils.memory import ConversationMemory, ChatMessage
@@ -41,17 +41,18 @@ class FDAAgent:
         # LlamaIndex 전역 설정 (rag_engine과 동일하게 설정)
         Settings.embed_model = OpenAIEmbedding(model="text-embedding-3-small", api_key=os.getenv("OPENAI_API_KEY"))
         Settings.llm = OpenAI(
-            model="gpt-4o", 
-            temperature=0, 
+            model="gpt-4.1",
+            temperature=0,
             api_key=os.getenv("OPENAI_API_KEY"),
-            max_tokens=1200  
+            max_tokens=2000
         )
 
         self.response_llm = OpenAI(
-            model="gpt-4-turbo",
+            model="gpt-5.2",
             temperature=0,
             api_key=os.getenv("OPENAI_API_KEY"),
-            max_tokens=1200
+            max_tokens=8000,
+            reasoning_effort="low"
         )
 
         # 1. 모든 FDA 컬렉션을 '전문가 툴'로 변환
@@ -69,7 +70,7 @@ class FDAAgent:
         # 컬렉션 라우팅 기본값 및 보조 LLM
         self.available_collections = ['guidance', 'ecfr', 'gras', 'dwpe', 'fsvp', 'rpm', 'usc']
         self.default_collections = ['guidance', 'ecfr', 'gras', 'dwpe']
-        self.collection_classifier_llm = OpenAI(model="gpt-3.5-turbo", temperature=0)
+        self.collection_classifier_llm = OpenAI(model="gpt-4o-mini", temperature=0)
         
         # ⚡ Orchestrator를 한 번만 생성 (속도 최적화)
         # - BM25 캐시 재사용
@@ -207,33 +208,56 @@ class FDAAgent:
 - **"cannot"이 있으면 무조건 "No"입니다!** ⬅️ 핵심 추가
 """
 
-        # 2. ReAct 에이전트 생성 (context 추가)
-        # ReAct Agent 상세 로깅을 위한 콜백 매니저
-        llama_debug = LlamaDebugHandler(print_trace_on_end=True)
-        callback_manager = CallbackManager([llama_debug])
-        
-        self.agent = ReActAgent.from_tools(
-            tools=self.fda_tools,
-            llm=Settings.llm,
-            system_prompt=system_prompt,
-            max_iterations=10,
-            verbose=True,
-            callback_manager=callback_manager,
-            # ✅ 핵심 추가: context로 도구 강제 사용
-            context="""You MUST use tools for FDA-related queries.
+        # 2. ReAct 에이전트 생성 (AgentWorkflow 기반)
+        # context 내용을 system_prompt 끝에 병합
+        system_prompt += """
+
+## 도구 사용 강제 (CRITICAL)
+You MUST use tools for FDA-related queries.
 NEVER answer with "(Implicit) I can answer without tools".
 For keywords like "비용/cost", "절차/procedure", "Chapter", "relabeling" → ALWAYS use tools.
-Always translate Korean to English before searching."""
+Always translate Korean to English before searching.
+
+## 도구 호출 제한 (CRITICAL)
+- 도구 호출은 최대 10회까지만 허용됩니다.
+- 같은 도구에 유사한 쿼리를 반복하지 마세요.
+- 충분한 정보를 수집했으면 즉시 답변을 생성하세요."""
+
+        self.agent = AgentWorkflow.from_tools_or_functions(
+            tools_or_functions=self.fda_tools,
+            llm=Settings.llm,
+            system_prompt=system_prompt,
+            timeout=90.0,
+            verbose=True,
         )
+
+    def _run_agent(self, query: str) -> str:
+        """AgentWorkflow를 동기 컨텍스트에서 실행하는 헬퍼"""
+        async def _exec():
+            handler = self.agent.run(user_msg=query)
+            result = await handler
+            return str(result)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                return pool.submit(lambda: asyncio.run(_exec())).result()
+        else:
+            return asyncio.run(_exec())
 
     def _is_food_export_question_llm(self, query: str) -> bool:
         """
-        빠르고 저렴한 LLM(gpt-3.5-turbo)을 사용하여 사용자의 질문이
+        빠르고 저렴한 LLM(gpt-4o-mini)을 사용하여 사용자의 질문이
         '특정 식품의 수출 규제'에 대한 것인지 분류하는 필터 함수.
         """
         try:
             # 필터 전용으로 저렴한 모델을 임시로 사용
-            filter_llm = OpenAI(model="gpt-3.5-turbo", temperature=0)
+            filter_llm = OpenAI(model="gpt-4o-mini", temperature=0)
             
             prompt = f"""
             Is the following user query about the regulations for exporting a specific food item?
@@ -829,14 +853,10 @@ Use the most relevant collections based on the product characteristics above.
                 
                 # Agent로 정보 수집만
                 print("🔍 Agent 정보 수집 시작...")
-                print("="*80)
-                print("🤖 ReAct Agent 실행 시작 (상세 로그 활성화)")
-                print("="*80)
-                
+
                 try:
-                    agent_response = self.agent.chat(full_query)
-                    collected_info = str(agent_response)
-                    
+                    collected_info = self._run_agent(full_query)
+
                     print("="*80)
                     print("✅ ReAct Agent 실행 완료")
                     print(f"📝 수집된 정보 길이: {len(collected_info)}자")
@@ -846,7 +866,7 @@ Use the most relevant collections based on the product characteristics above.
                     import traceback
                     traceback.print_exc()
                     raise
-                
+
                 # 병렬 검색 + Agent 정보를 합쳐서 최종 답변 생성
                 print("✅ 정보 수집 완료 - 최종 답변 생성")
                 return self._generate_response_with_agent_info(
@@ -891,11 +911,11 @@ Return ONLY valid JSON in this format without any extra text:
 Rules:
 - Always pick from the provided collection names.
 - Include "guidance" for 정의/FAQ/labeling 질문.
-- Include "ecfr" when regulations or CFR numbers are needed.
+- Include "ecfr" for regulatory requirements, definitions, labeling rules, allergen regulations, or when CFR numbers are mentioned.
 - Include "dwpe" for import alert or detention topics.
 - Include "fsvp" for importer responsibilities or verification.
 - Include "usc" for legal authority or penalties.
-- Include "gras" for ingredient safety or additive status.
+- Include "gras" for GRAS notices, ingredient safety evaluations, or food additive status inquiries only.
 - Include "rpm" only for procedural import handling questions.
 - If multiple collections are relevant, list them in order of importance.
 - Never output an empty list.
@@ -987,12 +1007,12 @@ Question: "{query}"
         
         # 출처 번호 매핑 생성
         citations = []
-        for i, r in enumerate(results[:10], 1):
+        for i, r in enumerate(results[:8], 1):
             # 제목이 비어있거나 None인 경우 기본값 설정
             title = r.get('title', '').strip()
             if not title:
                 title = f"{r['collection'].upper()} Document {i}"
-            
+
             # URL이 비어있는 경우 기본 URL 생성
             url = r.get('url', '').strip()
             if not url:
@@ -1009,28 +1029,28 @@ Question: "{query}"
                     url = f"https://www.accessdata.fda.gov/cms_ia/country_KR.html"
                 elif r['collection'] == 'usc':
                     url = f"https://www.law.cornell.edu/uscode/text/21"
-            
+
             citations.append({
                 "index": i,
                 "collection": r['collection'],
                 "title": title,
                 "url": url,
                 "score": r['score'],
-                "content": r.get('text', '')  # ⭐ 평가용: 문서 내용 추가
+                "content": r.get('text', '')  # 평가용: 문서 내용 추가
             })
-        
+
         # 출처 리스트 (프롬프트용)
         source_list = "\n".join([
             f"[출처 {c['index']}] {c['collection']}: {c['title'][:80]}"
             for c in citations
         ])
-        
+
         # 전체 검색 결과를 풍부하게 전달
         full_context = "\n\n".join([
             f"[출처 {i+1}] {r['collection'].upper()} (점수: {r['score']:.3f})\n"
             f"제목: {r.get('title', 'N/A')}\n"
-            f"내용: {r.get('text', '')[:10000]}"  # ⭐ 5000 → 10000자로 증가
-            for i, r in enumerate(results[:10])
+            f"내용: {r.get('text', '')[:3000]}"
+            for i, r in enumerate(results[:8])
         ])
         
         # 🆕 디버깅 출력 추가
@@ -1193,9 +1213,12 @@ A: "아니요, 제조업체는 승인할 수 없습니다. FDA만 승인할 수 
 - 답변에 영어를 섞지 마세요. 모든 내용을 한국어로 작성하세요.
 - 예외 없이 100% 한국어로 답변하세요.
 """
-        
+
         response = self.response_llm.complete(prompt)
-        
+        if not response.text.strip():
+            print("⚠️ 빈 응답 감지 - 1회 재시도")
+            response = self.response_llm.complete(prompt)
+
         print(f"\n📋 Citations 생성 완료:")
         print(f"  - 총 {len(citations)}개 citations 생성")
         for c in citations:
@@ -1224,12 +1247,12 @@ A: "아니요, 제조업체는 승인할 수 없습니다. FDA만 승인할 수 
         
         # 출처 번호 매핑 생성
         citations = []
-        for i, r in enumerate(parallel_results[:10], 1):
+        for i, r in enumerate(parallel_results[:8], 1):
             # 제목이 비어있거나 None인 경우 기본값 설정
             title = r.get('title', '').strip()
             if not title:
                 title = f"{r['collection'].upper()} Document {i}"
-            
+
             # URL이 비어있는 경우 기본 URL 생성
             url = r.get('url', '').strip()
             if not url:
@@ -1246,28 +1269,28 @@ A: "아니요, 제조업체는 승인할 수 없습니다. FDA만 승인할 수 
                     url = f"https://www.fda.gov/import-alerts"
                 elif r['collection'] == 'usc':
                     url = f"https://www.law.cornell.edu/uscode/text/21"
-            
+
             citations.append({
                 "index": i,
                 "collection": r['collection'],
                 "title": title,
                 "url": url,
                 "score": r['score'],
-                "content": r.get('text', '')  # ⭐ 평가용: 문서 내용 추가
+                "content": r.get('text', '')  # 평가용: 문서 내용 추가
             })
-        
+
         # 출처 리스트 (프롬프트용)
         source_list = "\n".join([
             f"[출처 {c['index']}] {c['collection']}: {c['title'][:80]}"
             for c in citations
         ])
-        
-        # 병렬 검색 결과 정리 (Streamlit 스타일)
+
+        # 병렬 검색 결과 정리
         parallel_context = "\n\n".join([
             f"[출처 {i+1}] {r['collection'].upper()} (점수: {r['score']:.3f})\n"
             f"제목: {r.get('title', 'N/A')}\n"
-            f"내용: {r.get('text', '')[:10000]}"  # ⭐ 5000 → 10000자로 증가
-            for i, r in enumerate(parallel_results[:10])
+            f"내용: {r.get('text', '')[:3000]}"
+            for i, r in enumerate(parallel_results[:8])
         ])
         
         print(f"📊 입력 정보:")
@@ -1287,7 +1310,7 @@ A: "아니요, 제조업체는 승인할 수 없습니다. FDA만 승인할 수 
 {parallel_context}
 
 Agent가 추가 수집한 정보:
-{agent_info}
+{agent_info[:3000]}
 
 ## 출처 목록
 {source_list}
@@ -1328,7 +1351,7 @@ Agent가 추가 수집한 정보:
 {parallel_context}
 
 Agent가 추가 수집한 정보:
-{agent_info}
+{agent_info[:3000]}
 
 ## 출처 목록
 {source_list}
@@ -1459,7 +1482,10 @@ A: "아니요, 제조업체는 승인할 수 없습니다. FDA만 승인할 수 
         
         # 단일 LLM 호출로 최종 답변 생성
         response = self.response_llm.complete(prompt)
-        
+        if not response.text.strip():
+            print("⚠️ 빈 응답 감지 - 1회 재시도")
+            response = self.response_llm.complete(prompt)
+
         # Citation 확인 및 경고
         answer_text = response.text
         import re
@@ -1537,8 +1563,7 @@ A: "아니요, 제조업체는 승인할 수 없습니다. FDA만 승인할 수 
         self.memory.clear_history()
         # 🆕 검색 결과 캐시도 초기화
         self.search_results_cache = []
-        # 에이전트도 새로 시작
-        self.agent.reset()
+        # AgentWorkflow는 run()마다 새 컨텍스트를 생성하므로 별도 리셋 불필요
 
     async def chat_stream(self, query: str):
         """
@@ -1779,9 +1804,9 @@ A: "아니요, 제조업체는 승인할 수 없습니다. FDA만 승인할 수 
                 print("="*80)
                 
                 try:
-                    agent_response = self.agent.chat(full_query)
-                    collected_info = str(agent_response)
-                    
+                    handler = self.agent.run(user_msg=full_query)
+                    collected_info = str(await handler)
+
                     print("="*80)
                     print("✅ ReAct Agent 실행 완료")
                     print(f"📝 수집된 정보 길이: {len(collected_info)}자")
@@ -1791,7 +1816,7 @@ A: "아니요, 제조업체는 승인할 수 없습니다. FDA만 승인할 수 
                     import traceback
                     traceback.print_exc()
                     raise
-                
+
                 yield {
                     "type": "status",
                     "data": {
@@ -1844,11 +1869,3 @@ A: "아니요, 제조업체는 승인할 수 없습니다. FDA만 승인할 수 
                 }
             }
 
-    ## 현재 사용되지 않아서 수정하지 않음. 
-    def stream_chat(self, query: str):
-        """
-        스트리밍 방식으로 답변을 생성합니다. (향후 확장 기능)
-        """
-        response_stream = self.agent.stream_chat(query)
-        for token in response_stream.response_gen:
-            yield token

@@ -1,7 +1,7 @@
 # utils/tools.py
 from llama_index.core.tools import QueryEngineTool
 from llama_index.core import VectorStoreIndex
-from qdrant_client import QdrantClient
+from qdrant_client import QdrantClient, AsyncQdrantClient
 from llama_index.vector_stores.qdrant import QdrantVectorStore
 from llama_index.core import StorageContext
 from llama_index.embeddings.openai import OpenAIEmbedding
@@ -15,6 +15,11 @@ def create_fda_tools():
     """FDA 컬렉션별 QueryEngineTool 생성 (강화된 description)"""
     
     client = QdrantClient(
+        url=os.getenv("QDRANT_URL"),
+        api_key=os.getenv("QDRANT_API_KEY")
+    )
+
+    aclient = AsyncQdrantClient(
         url=os.getenv("QDRANT_URL"),
         api_key=os.getenv("QDRANT_API_KEY")
     )
@@ -35,6 +40,7 @@ def create_fda_tools():
         try:
             vector_store = QdrantVectorStore(
                 client=client,
+                aclient=aclient,
                 collection_name=collection_name
             )
             storage_context = StorageContext.from_defaults(vector_store=vector_store)
