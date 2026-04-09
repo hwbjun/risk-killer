@@ -250,6 +250,24 @@ Always translate Korean to English before searching.
         else:
             return asyncio.run(_exec())
 
+    def _stream_response(self, prompt: str):
+        """response_llm을 스트리밍 호출하여 (delta, full_text) 튜플을 yield"""
+        full_text = ""
+        for chunk in self.response_llm.stream_complete(prompt):
+            delta = chunk.delta or ""
+            if delta:
+                full_text += delta
+                yield delta, full_text
+        # 빈 응답 재시도 (1회)
+        if not full_text.strip():
+            print("⚠️ 스트림 빈 응답 감지 - 1회 재시도")
+            full_text = ""
+            for chunk in self.response_llm.stream_complete(prompt):
+                delta = chunk.delta or ""
+                if delta:
+                    full_text += delta
+                    yield delta, full_text
+
     def _is_food_export_question_llm(self, query: str) -> bool:
         """
         빠르고 저렴한 LLM(gpt-4o-mini)을 사용하여 사용자의 질문이
@@ -1002,72 +1020,81 @@ Question: "{query}"
         print(f"  ✅ 충분성 평가 통과!\n")
         return True
 
-    def _generate_direct_response(self, query: str, results: List[Dict], decomposition: dict) -> dict:
-        """병렬 검색 결과만으로 직접 답변 생성 (제품 질문과 일반 질문 모두 지원)"""
-        
-        # 출처 번호 매핑 생성
+    def _build_citations(self, results: List[Dict]) -> List[Dict]:
+        """검색 결과에서 citation 목록 생성 (공용)"""
         citations = []
+        url_map = {
+            'fsvp': 'https://www.fda.gov/food/importing-food-products-united-states/foreign-suppliers-verification-programs-fsvp-importer-portal-records-submission',
+            'gras': 'https://www.hfpappexternal.fda.gov/scripts/fdcc/index.cfm?set=GRASNotices',
+            'ecfr': 'https://www.ecfr.gov/current/title-21',
+            'guidance': 'https://www.fda.gov/regulatory-information/search-fda-guidance-documents',
+            'dwpe': 'https://www.fda.gov/import-alerts',
+            'usc': 'https://www.law.cornell.edu/uscode/text/21',
+        }
         for i, r in enumerate(results[:8], 1):
-            # 제목이 비어있거나 None인 경우 기본값 설정
-            title = r.get('title', '').strip()
-            if not title:
-                title = f"{r['collection'].upper()} Document {i}"
-
-            # URL이 비어있는 경우 기본 URL 생성
-            url = r.get('url', '').strip()
-            if not url:
-                # 컬렉션별 기본 URL 생성
-                if r['collection'] == 'fsvp':
-                    url = f"https://www.fda.gov/food/importing-food-products-united-states/foreign-suppliers-verification-programs-fsvp-importer-portal-records-submission"
-                elif r['collection'] == 'gras':
-                    url = f"https://www.hfpappexternal.fda.gov/scripts/fdcc/index.cfm?set=GRASNotices"
-                elif r['collection'] == 'ecfr':
-                    url = f"https://www.ecfr.gov/current/title-21"
-                elif r['collection'] == 'guidance':
-                    url = f"https://www.fda.gov/regulatory-information/search-fda-guidance-documents"
-                elif r['collection'] == 'dwpe':
-                    url = f"https://www.accessdata.fda.gov/cms_ia/country_KR.html"
-                elif r['collection'] == 'usc':
-                    url = f"https://www.law.cornell.edu/uscode/text/21"
-
+            title = r.get('title', '').strip() or f"{r['collection'].upper()} Document {i}"
+            url = r.get('url', '').strip() or url_map.get(r['collection'], '')
             citations.append({
                 "index": i,
                 "collection": r['collection'],
                 "title": title,
                 "url": url,
                 "score": r['score'],
-                "content": r.get('text', '')  # 평가용: 문서 내용 추가
+                "content": r.get('text', ''),
             })
+        return citations
 
-        # 출처 리스트 (프롬프트용)
+    def _build_context_and_sources(self, results: List[Dict], citations: List[Dict]) -> tuple:
+        """검색 결과를 프롬프트용 컨텍스트 문자열과 출처 리스트로 변환"""
         source_list = "\n".join([
             f"[출처 {c['index']}] {c['collection']}: {c['title'][:80]}"
             for c in citations
         ])
-
-        # 전체 검색 결과를 풍부하게 전달
         full_context = "\n\n".join([
             f"[출처 {i+1}] {r['collection'].upper()} (점수: {r['score']:.3f})\n"
             f"제목: {r.get('title', 'N/A')}\n"
             f"내용: {r.get('text', '')[:3000]}"
             for i, r in enumerate(results[:8])
         ])
-        
-        # 🆕 디버깅 출력 추가
-        print("\n" + "="*60)
-        print("🔍 검색된 문서 내용 (디버깅)")
-        print("="*60)
-        for i, r in enumerate(results[:2], 1):
-            text_content = r.get('text', '')
-            print(f"\n[출처 {i}] {r['collection'].upper()} (점수: {r['score']:.3f})")
-            print(f"제목: {r.get('title', 'N/A')}")
-            print(f"📏 원본 텍스트 길이: {len(text_content)}자")  # ⬅️ 핵심!
-            print(f"내용 (첫 500자): {text_content[:2000]}")
-            print()
-        print("="*60 + "\n")
-        
+        return full_context, source_list
+
+    def _prepare_direct_response(self, query: str, results: List[Dict], decomposition: dict) -> dict:
+        """prompt + citations를 준비만 하고 LLM 호출은 하지 않음 (스트리밍용)"""
+        citations = self._build_citations(results)
+        full_context, source_list = self._build_context_and_sources(results, citations)
+
         if decomposition:
-            prompt = f"""
+            prompt = self._build_product_prompt(query, decomposition, full_context, source_list)
+        else:
+            prompt = self._build_general_prompt(query, full_context, source_list)
+
+        return {
+            "prompt": prompt,
+            "citations": citations,
+            "sources": [c['title'] for c in citations[:5]],
+            "keywords": list(set(r['collection'] for r in results[:8])),
+        }
+
+    def _generate_direct_response(self, query: str, results: List[Dict], decomposition: dict) -> dict:
+        """병렬 검색 결과만으로 직접 답변 생성 (non-stream 엔드포인트용)"""
+        prepared = self._prepare_direct_response(query, results, decomposition)
+
+        response = self.response_llm.complete(prepared["prompt"])
+        if not response.text.strip():
+            print("⚠️ 빈 응답 감지 - 1회 재시도")
+            response = self.response_llm.complete(prepared["prompt"])
+
+        return {
+            "content": response.text,
+            "citations": prepared["citations"],
+            "cfr_references": [],
+            "sources": prepared["sources"],
+            "keywords": prepared["keywords"],
+        }
+
+    def _build_product_prompt(self, query, decomposition, full_context, source_list):
+        """제품 질문용 프롬프트 생성"""
+        return f"""
 사용자 질문: {query}
 
 제품 특성:
@@ -1107,13 +1134,21 @@ Question: "{query}"
 - 답변에 영어를 섞지 마세요. 모든 내용을 한국어로 작성하세요.
 - 예외 없이 100% 한국어로 답변하세요.
 """
-        else:
-            prompt = f"""
+
+    def _build_general_prompt(self, query, full_context, source_list, agent_info=None):
+        """일반 질문용 프롬프트 생성"""
+        agent_section = ""
+        if agent_info:
+            agent_section = f"""
+Agent가 추가 수집한 정보:
+{agent_info[:3000]}
+"""
+        return f"""
 사용자 질문: {query}
 
 📖 문서 컨텍스트 (각 내용 앞의 [출처 N]을 보고 주석을 달아야 함):
 {full_context}
-
+{agent_section}
 ## 출처 목록
 {source_list}
 
@@ -1154,49 +1189,6 @@ Question: "{query}"
 - 관련 법 조항, 규정 번호, 구체적인 절차를 포함하세요.
 - 최소 3-5문단 이상의 상세한 답변을 작성하세요.
 
-**예시로 배우기:**
-
-예시 1:
-Q: "Can FDA add allergens to the list?"
-문서: "FDA cannot alter the statutory list. Congress must amend the law."
-분석: 질문 주어(FDA) = 문서 주어(FDA), "cannot" 발견
-A: "아니요, FDA는 목록에 알레르겐을 추가할 수 없습니다. 
-
-FD&C 법(Federal Food, Drug, and Cosmetic Act)의 제 201(qq) 조항에 따르면, 주요 식품 알레르겐 목록은 법률로 정해진 것이며, FDA는 이 법정 목록(statutory list)을 변경할 권한이 없습니다. 현재 9가지 주요 식품 알레르겐(우유, 계란, 생선, 갑각류 해산물, 견과류, 땅콩, 밀, 콩, 참깨)은 의회(Congress)가 법을 개정해야만 변경할 수 있습니다.
-
-다만, FDA는 주요 알레르겐으로 지정되지 않은 다른 식품 알레르겐에 대해서는, 적절한 경우 라벨링을 요구할 수 있는 권한을 가지고 있습니다. 이는 목록 자체를 변경하는 것과는 별개의 권한입니다."
-
-예시 2:
-Q: "그러면 추가 권한은 의회에게만 있나요?"
-문서: "FDA cannot alter... Congress must amend the law."
-분석: 질문 주어(의회) ≠ 문서 부정 주어(FDA), 문서에 "Congress must" 발견
-A: "예, 주요 알레르겐 목록 변경 권한은 의회에게만 있습니다."
-(주의: 문서에 "cannot"이 있어도, FDA에 대한 부정이므로 의회 질문엔 "예")
-
-예시 3:
-Q: "Is FDA required to inspect?"
-문서: "FDA must inspect all facilities."
-분석: 질문 주어(FDA) = 문서 주어(FDA), 긍정 의무("must")
-A: "예, FDA는 모든 시설을 검사해야 합니다."
-
-예시 4:
-Q: "제조업체가 승인할 수 있나요?"
-문서: "Only FDA can approve. Manufacturers cannot approve."
-분석: 질문 주어(제조업체) = 문서 부정 주어(Manufacturers)
-A: "아니요, 제조업체는 승인할 수 없습니다. FDA만 승인할 수 있습니다."
-
-**답변 체크리스트:**
-✓ 질문의 주어와 문서의 주어가 일치하는가?
-✓ 질문이 묻는 행위와 문서의 행위가 같은가?
-✓ "예/아니요"가 질문에 논리적으로 맞는가?
-✓ 답변 내용이 첫 문장의 "예/아니요"와 일치하는가?
-
-**금지 사항:**
-❌ 키워드만 보고 기계적으로 답변 (예: "cannot" 발견 → 무조건 "아니요")
-❌ 질문의 주어를 무시하고 답변
-❌ 모순되는 답변 ("아니요, ~할 수 있습니다" 또는 "예, ~할 수 없습니다")
-❌ 5W1H 질문에 "예/아니요"로 답변
-
 **Citation 규칙:**
 - 각 주장 뒤에 [1], [2] 형식으로 출처 번호 표시
 - 여러 출처는 [1][2] 처럼 연속으로 표시
@@ -1214,314 +1206,55 @@ A: "아니요, 제조업체는 승인할 수 없습니다. FDA만 승인할 수 
 - 예외 없이 100% 한국어로 답변하세요.
 """
 
-        response = self.response_llm.complete(prompt)
-        if not response.text.strip():
-            print("⚠️ 빈 응답 감지 - 1회 재시도")
-            response = self.response_llm.complete(prompt)
-
-        print(f"\n📋 Citations 생성 완료:")
-        print(f"  - 총 {len(citations)}개 citations 생성")
-        for c in citations:
-            print(f"    [{c['index']}] {c['collection']}: {c['title'][:50]}...")
-        
-        return {
-            "content": response.text,
-            "citations": citations,
-            "cfr_references": [],
-            "sources": [c['title'] for c in citations[:5]],
-            "keywords": list(set(r['collection'] for r in results))
-        }
-
-    def _generate_response_with_agent_info(
-        self, 
-        query: str, 
+    def _prepare_response_with_agent_info(
+        self,
+        query: str,
         parallel_results: List[Dict],
         agent_info: str,
         decomposition: dict
     ) -> dict:
-        """병렬 검색 + Agent 수집 정보를 종합하여 답변 생성"""
-        
-        print("\n" + "="*60)
-        print("📝 최종 답변 생성 시작")
-        print("="*60)
-        
-        # 출처 번호 매핑 생성
-        citations = []
-        for i, r in enumerate(parallel_results[:8], 1):
-            # 제목이 비어있거나 None인 경우 기본값 설정
-            title = r.get('title', '').strip()
-            if not title:
-                title = f"{r['collection'].upper()} Document {i}"
+        """prompt + citations를 준비만 하고 LLM 호출은 하지 않음 (스트리밍용)"""
+        citations = self._build_citations(parallel_results)
+        full_context, source_list = self._build_context_and_sources(parallel_results, citations)
 
-            # URL이 비어있는 경우 기본 URL 생성
-            url = r.get('url', '').strip()
-            if not url:
-                # 컬렉션별 기본 URL 생성
-                if r['collection'] == 'fsvp':
-                    url = f"https://www.fda.gov/food/importing-food-products-united-states/foreign-suppliers-verification-programs-fsvp-importer-portal-records-submission"
-                elif r['collection'] == 'gras':
-                    url = f"https://www.hfpappexternal.fda.gov/scripts/fdcc/index.cfm?set=GRASNotices"
-                elif r['collection'] == 'ecfr':
-                    url = f"https://www.ecfr.gov/current/title-21"
-                elif r['collection'] == 'guidance':
-                    url = f"https://www.fda.gov/regulatory-information/search-fda-guidance-documents"
-                elif r['collection'] == 'dwpe':
-                    url = f"https://www.fda.gov/import-alerts"
-                elif r['collection'] == 'usc':
-                    url = f"https://www.law.cornell.edu/uscode/text/21"
-
-            citations.append({
-                "index": i,
-                "collection": r['collection'],
-                "title": title,
-                "url": url,
-                "score": r['score'],
-                "content": r.get('text', '')  # 평가용: 문서 내용 추가
-            })
-
-        # 출처 리스트 (프롬프트용)
-        source_list = "\n".join([
-            f"[출처 {c['index']}] {c['collection']}: {c['title'][:80]}"
-            for c in citations
-        ])
-
-        # 병렬 검색 결과 정리
-        parallel_context = "\n\n".join([
-            f"[출처 {i+1}] {r['collection'].upper()} (점수: {r['score']:.3f})\n"
-            f"제목: {r.get('title', 'N/A')}\n"
-            f"내용: {r.get('text', '')[:3000]}"
-            for i, r in enumerate(parallel_results[:8])
-        ])
-        
-        print(f"📊 입력 정보:")
-        print(f"  - 병렬 검색 결과: {len(parallel_results)}개")
-        print(f"  - Agent 수집 정보: {len(agent_info)}자")
-        print(f"  - 총 컨텍스트: {len(parallel_context) + len(agent_info)}자")
-        
-        # 통합 프롬프트
         if decomposition:
-            prompt = f"""
-사용자 질문: {query}
-
-제품 특성:
-{json.dumps(decomposition, indent=2, ensure_ascii=False)}
-
-📖 문서 컨텍스트 (각 내용 앞의 [출처 N]을 보고 주석을 달아야 함):
-{parallel_context}
-
-Agent가 추가 수집한 정보:
-{agent_info[:3000]}
-
-## 출처 목록
-{source_list}
-
-위 모든 정보를 종합하여 다음을 포함한 답변을 작성하세요:
-1. 구체적인 CFR 규정 번호와 내용
-2. Import Alert 여부
-3. 알레르기 라벨링 구체적 요구사항
-4. FSVP 검증 절차
-5. 실무 체크리스트 (5개 이상)
-
-**🚨 Citation 규칙 (필수! 반드시 준수!):**
-- **답변의 모든 주요 주장 뒤에 반드시 [1], [2] 형식으로 출처 번호를 표시하세요.**
-- 여러 출처를 참고한 경우 [1][2] 처럼 연속으로 표시하세요.
-- **출처 번호 없이는 답변을 완료하지 마세요.**
-- **각 문단마다 최소 1개 이상의 출처 번호가 있어야 합니다.**
-
-**Citation 예시 (반드시 이 형식을 따르세요):**
-- 새우는 주요 알레르기 유발 물질로 표시해야 합니다[1].
-- 21 CFR 1250.26과 Import Alert 16-50을 준수해야 합니다[2][3].
-- 주요 식품 알레르겐은 9가지입니다[1][2]. 이들은 우유, 계란, 생선, 갑각류 해산물, 견과류, 땅콩, 밀, 콩, 참깨입니다[1][2].
-
-**Citation 체크리스트 (답변 완료 전 확인):**
-✓ 답변의 각 문단에 출처 번호가 있는가?
-✓ 주요 규정이나 법 조항을 언급할 때 출처 번호가 있는가?
-✓ 통계나 구체적 정보를 제시할 때 출처 번호가 있는가?
-
-**🌏 언어 규칙 (최우선!):**
-- 질문이 영어든 한국어든 상관없이 **무조건 한국어로만 답변하세요.**
-- 답변에 영어를 섞지 마세요. 모든 내용을 한국어로 작성하세요.
-- 예외 없이 100% 한국어로 답변하세요.
-"""
+            prompt = self._build_product_prompt(query, decomposition, full_context, source_list)
+            # agent_info를 프롬프트 내 출처목록 앞에 삽입
+            agent_section = f"\nAgent가 추가 수집한 정보:\n{agent_info[:3000]}\n"
+            prompt = prompt.replace("## 출처 목록", agent_section + "## 출처 목록")
         else:
-            prompt = f"""
-사용자 질문: {query}
+            prompt = self._build_general_prompt(query, full_context, source_list, agent_info=agent_info)
 
-📖 문서 컨텍스트 (각 내용 앞의 [출처 N]을 보고 주석을 달아야 함):
-{parallel_context}
+        return {
+            "prompt": prompt,
+            "citations": citations,
+            "sources": [c['title'] for c in citations[:5]],
+            "keywords": list(set(r['collection'] for r in parallel_results[:8])),
+        }
 
-Agent가 추가 수집한 정보:
-{agent_info[:3000]}
+    def _generate_response_with_agent_info(
+        self,
+        query: str,
+        parallel_results: List[Dict],
+        agent_info: str,
+        decomposition: dict
+    ) -> dict:
+        """병렬 검색 + Agent 수집 정보를 종합하여 답변 생성 (non-stream 엔드포인트용)"""
+        prepared = self._prepare_response_with_agent_info(
+            query, parallel_results, agent_info, decomposition
+        )
 
-## 출처 목록
-{source_list}
-
-**🚨 필수 규칙: 정보 우선순위**
-1. **Agent가 수집한 정보가 최신이고 정확합니다.**
-2. **Agent 정보와 출처 문서가 충돌하면 무조건 Agent 정보를 따르세요!**
-3. **특히 알레르겐 개수가 다르면 Agent 정보(9개, 참깨 포함)가 맞습니다.**
-4. **출처 1이 8개라고 해도, Agent가 9개라고 하면 9개로 답변하세요.**
-
-위 모든 정보를 종합하여 답변하되, 다음 규칙을 **반드시** 따르세요:
-
-**🚨 질문 유형 구분 (최우선!):**
-
-**1) 5W1H 질문 (Who/What/Where/When/Why/How):**
-- "누구", "무엇", "어디", "언제", "왜", "어떻게"
-- "Who", "What", "Where", "When", "Why", "How"
-- **❌ 절대 "예/아니요"로 시작하지 마세요!**
-- **✅ 답의 핵심(누구/무엇)으로 첫 문장 시작**
-
-**Who 질문 특별 규칙:**
-질문: "누가 X를 하나요?" / "Who does X?"
-- ❌ 잘못: "아니요, FDA는 X를 못합니다. Y가 합니다."
-- ✅ 올바름: "Y가 X를 합니다."
-- **핵심: 질문에서 물어본 대상(Who)을 첫 문장에 바로 답하세요!**
-
-예시:
-- Q: "그러면 누가 그 권한을 가지고 있나요?"
-- 문서: "FDA cannot alter... Congress must amend the law"
-- ❌ 나쁜 답변: "아니요, FDA는 권한이 없습니다. 의회가 법을 개정해야 합니다."
-- ✅ 좋은 답변: "의회(Congress)가 그 권한을 가지고 있습니다. 법률 개정을 통해서만 변경 가능합니다."
-
-- Q: "누가 시설을 검사하나요?"
-- ❌ 잘못: "아니요, 제조업체는 검사할 수 없습니다."
-- ✅ 올바름: "FDA 지역 사무소가 시설을 검사합니다."
-
-- Q: "어디에 제출해야 하나요?"
-- ❌ 잘못: "아니요, 제출할 수 없습니다."
-- ✅ 올바름: "FDA의 전자 제출 시스템(ESG)을 통해 제출해야 합니다."
-
-**2) Yes/No 질문 (Can/Does/Is/Will):**
-
-**핵심 원칙:**
-1. **질문의 주어를 정확히 파악하세요**
-   - 질문 주어와 문서 주어가 일치하는지 확인
-   - 주어가 다르면 답도 달라질 수 있음
-
-2. **질문과 문서의 의미가 일치하는지 확인하세요**
-   - 질문이 묻는 것과 문서가 답하는 것이 같은 내용인지 판단
-   - 단순 키워드 매칭이 아닌 의미적 일치 여부 확인
-
-3. **첫 문장은 "예" 또는 "아니요"로 명확히 시작하세요**
-   - 애매한 표현 금지
-   - 한국어로 답변 시 "예/아니요" 사용 (Yes/No 아님)
-
-**🚨 답변 길이 규칙 (중요!):**
-- **반드시 상세하고 포괄적으로 답변하세요.**
-- "예/아니요"만으로 답변하지 마세요. 항상 이유와 배경을 설명하세요.
-- 관련 법 조항, 규정 번호, 구체적인 절차를 포함하세요.
-- 최소 3-5문단 이상의 상세한 답변을 작성하세요.
-
-**예시로 배우기:**
-
-예시 1:
-Q: "Can FDA add allergens to the list?"
-문서: "FDA cannot alter the statutory list. Congress must amend the law."
-분석: 질문 주어(FDA) = 문서 주어(FDA), "cannot" 발견
-A: "아니요, FDA는 목록에 알레르겐을 추가할 수 없습니다. 
-
-FD&C 법(Federal Food, Drug, and Cosmetic Act)의 제 201(qq) 조항에 따르면, 주요 식품 알레르겐 목록은 법률로 정해진 것이며, FDA는 이 법정 목록(statutory list)을 변경할 권한이 없습니다. 현재 9가지 주요 식품 알레르겐(우유, 계란, 생선, 갑각류 해산물, 견과류, 땅콩, 밀, 콩, 참깨)은 의회(Congress)가 법을 개정해야만 변경할 수 있습니다.
-
-다만, FDA는 주요 알레르겐으로 지정되지 않은 다른 식품 알레르겐에 대해서는, 적절한 경우 라벨링을 요구할 수 있는 권한을 가지고 있습니다. 이는 목록 자체를 변경하는 것과는 별개의 권한입니다."
-
-예시 2:
-Q: "그러면 추가 권한은 의회에게만 있나요?"
-문서: "FDA cannot alter... Congress must amend the law."
-분석: 질문 주어(의회) ≠ 문서 부정 주어(FDA), 문서에 "Congress must" 발견
-A: "예, 주요 알레르겐 목록 변경 권한은 의회에게만 있습니다."
-(주의: 문서에 "cannot"이 있어도, FDA에 대한 부정이므로 의회 질문엔 "예")
-
-예시 3:
-Q: "Is FDA required to inspect?"
-문서: "FDA must inspect all facilities."
-분석: 질문 주어(FDA) = 문서 주어(FDA), 긍정 의무("must")
-A: "예, FDA는 모든 시설을 검사해야 합니다."
-
-예시 4:
-Q: "제조업체가 승인할 수 있나요?"
-문서: "Only FDA can approve. Manufacturers cannot approve."
-분석: 질문 주어(제조업체) = 문서 부정 주어(Manufacturers)
-A: "아니요, 제조업체는 승인할 수 없습니다. FDA만 승인할 수 있습니다."
-
-**답변 체크리스트:**
-✓ 질문의 주어와 문서의 주어가 일치하는가?
-✓ 질문이 묻는 행위와 문서의 행위가 같은가?
-✓ "예/아니요"가 질문에 논리적으로 맞는가?
-✓ 답변 내용이 첫 문장의 "예/아니요"와 일치하는가?
-
-**금지 사항:**
-❌ 키워드만 보고 기계적으로 답변 (예: "cannot" 발견 → 무조건 "아니요")
-❌ 질문의 주어를 무시하고 답변
-❌ 모순되는 답변 ("아니요, ~할 수 있습니다" 또는 "예, ~할 수 없습니다")
-❌ 5W1H 질문에 "예/아니요"로 답변
-
-**🚨 Citation 규칙 (필수! 반드시 준수!):**
-- **답변의 모든 주요 주장 뒤에 반드시 [1], [2] 형식으로 출처 번호를 표시하세요.**
-- 여러 출처를 참고한 경우 [1][2] 처럼 연속으로 표시하세요.
-- **출처 번호 없이는 답변을 완료하지 마세요.**
-- **각 문단마다 최소 1개 이상의 출처 번호가 있어야 합니다.**
-
-**Citation 예시 (반드시 이 형식을 따르세요):**
-- 주요 식품 알레르겐은 9가지입니다[1][2]. 이들은 우유, 계란, 생선, 갑각류 해산물, 견과류, 땅콩, 밀, 콩, 참깨입니다[1][2].
-- FDA는 법정 목록을 변경할 권한이 없습니다[1][3]. 의회(Congress)가 법을 개정해야만 변경 가능합니다[1][3].
-- 라벨링 요구사항은 21 CFR 117.3에 명시되어 있습니다[2][4].
-
-**Citation 체크리스트 (답변 완료 전 확인):**
-✓ 답변의 각 문단에 출처 번호가 있는가?
-✓ 주요 규정이나 법 조항을 언급할 때 출처 번호가 있는가?
-✓ 통계나 구체적 정보를 제시할 때 출처 번호가 있는가?
-
-**🌏 언어 규칙 (최우선!):**
-- 질문이 영어든 한국어든 상관없이 **무조건 한국어로만 답변하세요.**
-- 답변에 영어를 섞지 마세요. 모든 내용을 한국어로 작성하세요.
-- 예외 없이 100% 한국어로 답변하세요.
-"""
-        
-        print(f"\n🤖 LLM 호출 중... (프롬프트: {len(prompt)}자)")
-        
-        # 단일 LLM 호출로 최종 답변 생성
-        response = self.response_llm.complete(prompt)
+        response = self.response_llm.complete(prepared["prompt"])
         if not response.text.strip():
             print("⚠️ 빈 응답 감지 - 1회 재시도")
-            response = self.response_llm.complete(prompt)
+            response = self.response_llm.complete(prepared["prompt"])
 
-        # Citation 확인 및 경고
-        answer_text = response.text
-        import re
-        citation_pattern = r'\[\d+\]'
-        found_citations = re.findall(citation_pattern, answer_text)
-        
-        print(f"\n✅ 최종 답변 생성 완료!")
-        print(f"  - 답변 길이: {len(answer_text)}자")
-        print(f"  - 답변 단어 수: {len(answer_text.split())}단어")
-        print(f"  - 발견된 Citation: {len(found_citations)}개")
-        
-        if len(found_citations) == 0:
-            print(f"\n⚠️ 경고: 답변에 Citation이 없습니다!")
-            print(f"  - 최소 {len(citations)}개의 출처가 있으므로 Citation을 추가해야 합니다.")
-            print(f"  - 답변 끝에 출처 정보를 추가하는 것을 고려하세요.")
-        elif len(found_citations) < len(citations) // 2:
-            print(f"\n⚠️ 경고: Citation이 부족합니다 (발견: {len(found_citations)}개, 출처: {len(citations)}개)")
-        
-        print(f"\n📋 Citations 생성 완료:")
-        print(f"  - 총 {len(citations)}개 citations 생성")
-        for c in citations:
-            print(f"    [{c['index']}] {c['collection']}: {c['title'][:50]}...")
-        
-        # 최종 답변 내용 출력
-        print("\n" + "="*60)
-        print("📄 최종 답변 내용:")
-        print("="*60)
-        print(answer_text)
-        print("="*60 + "\n")
-        
         return {
-            "content": answer_text,
-            "citations": citations,
+            "content": response.text,
+            "citations": prepared["citations"],
             "cfr_references": [],
-            "sources": [c['title'] for c in citations[:5]],
-            "keywords": list(set(r['collection'] for r in parallel_results))
+            "sources": prepared["sources"],
+            "keywords": prepared["keywords"],
         }
 
     def _generate_fallback_response(self, query: str) -> str:
@@ -1751,13 +1484,40 @@ A: "아니요, 제조업체는 승인할 수 없습니다. FDA만 승인할 수 
                     }
                 }
                 
-                response = self._generate_direct_response(query, ranked_results, decomposition)
-                
+                prepared = self._prepare_direct_response(query, ranked_results, decomposition)
+
+                print("=" * 60)
+                print("📝 최종 답변 생성 시작 (스트리밍)")
+                print("=" * 60)
+                print(f"📊 입력 정보:")
+                print(f"  - 병렬 검색 결과: {len(ranked_results)}개")
+                print(f"🤖 LLM 스트리밍 중... (프롬프트: {len(prepared['prompt'])}자)")
+
+                full_text = ""
+                for delta, full_text in self._stream_response(prepared["prompt"]):
+                    yield {"type": "token", "data": {"chunk": delta}}
+                    await asyncio.sleep(0)  # 이벤트 루프에 제어 반환 → SSE flush
+
+                print(f"✅ 최종 답변 생성 완료! (스트리밍)")
+                print(f"  - 답변 길이: {len(full_text)}자")
+                print(f"  - Citations: {len(prepared['citations'])}개")
+                print("=" * 60)
+                print("📄 최종 답변 내용:")
+                print("=" * 60)
+                print(full_text)
+                print("=" * 60)
+
                 yield {
                     "type": "result",
-                    "data": response
+                    "data": {
+                        "content": full_text,
+                        "citations": prepared["citations"],
+                        "cfr_references": [],
+                        "sources": prepared["sources"],
+                        "keywords": prepared["keywords"],
+                    }
                 }
-                
+
             else:
                 # 느린 경로: Agent 추가 수집
                 print("🔄 ReAct Agent로 추가 정보 수집")
@@ -1837,16 +1597,44 @@ A: "아니요, 제조업체는 승인할 수 없습니다. FDA만 승인할 수 
                 }
                 
                 print("✅ 정보 수집 완료 - 최종 답변 생성")
-                response = self._generate_response_with_agent_info(
+                prepared = self._prepare_response_with_agent_info(
                     query=query,
                     parallel_results=ranked_results,
                     agent_info=collected_info,
                     decomposition=decomposition
                 )
-                
+
+                print("=" * 60)
+                print("📝 최종 답변 생성 시작 (스트리밍)")
+                print("=" * 60)
+                print(f"📊 입력 정보:")
+                print(f"  - 병렬 검색 결과: {len(ranked_results)}개")
+                print(f"  - Agent 수집 정보: {len(collected_info)}자")
+                print(f"🤖 LLM 스트리밍 중... (프롬프트: {len(prepared['prompt'])}자)")
+
+                full_text = ""
+                for delta, full_text in self._stream_response(prepared["prompt"]):
+                    yield {"type": "token", "data": {"chunk": delta}}
+                    await asyncio.sleep(0)  # 이벤트 루프에 제어 반환 → SSE flush
+
+                print(f"✅ 최종 답변 생성 완료! (스트리밍)")
+                print(f"  - 답변 길이: {len(full_text)}자")
+                print(f"  - Citations: {len(prepared['citations'])}개")
+                print("=" * 60)
+                print("📄 최종 답변 내용:")
+                print("=" * 60)
+                print(full_text)
+                print("=" * 60)
+
                 yield {
                     "type": "result",
-                    "data": response
+                    "data": {
+                        "content": full_text,
+                        "citations": prepared["citations"],
+                        "cfr_references": [],
+                        "sources": prepared["sources"],
+                        "keywords": prepared["keywords"],
+                    }
                 }
             
             # 완료 이벤트

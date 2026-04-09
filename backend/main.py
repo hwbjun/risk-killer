@@ -231,8 +231,9 @@ async def chat_stream(query: str, project_id: Optional[int] = None):
                     "data": json.dumps(event_data, ensure_ascii=False)
                 }
                 
-                # 작은 지연 추가 (안정성)
-                await asyncio.sleep(0.01)
+                # token 이벤트는 지연 없이 즉시 전송, 나머지는 안정성을 위해 소폭 지연
+                if event_type != "token":
+                    await asyncio.sleep(0.01)
             
             # 대화 히스토리를 메모리에 저장 (후속 질문 처리를 위함)
             if final_response_content:

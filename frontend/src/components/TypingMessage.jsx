@@ -6,7 +6,14 @@ import TermTooltip from './TermTooltip';
 import CitationLink from './CitationLink';
 
 const TypingMessage = ({ message, speed = 15, citations }) => {
-  const { displayText, isComplete } = useTypingEffect(message.content, speed);
+  // SSE 토큰 스트리밍 시 타이핑 효과 비활성화 — 토큰 도착 자체가 타이핑 역할
+  const skipTyping = message.isStreaming !== undefined;
+  const { displayText: typedText, isComplete: typingComplete } = useTypingEffect(
+    skipTyping ? '' : message.content,
+    speed
+  );
+  const displayText = skipTyping ? message.content : typedText;
+  const isComplete = skipTyping ? !message.isStreaming : typingComplete;
   
   // FDA 용어를 감지하고 툴팁으로 감싸는 함수
   const renderTextWithTerms = (text) => {

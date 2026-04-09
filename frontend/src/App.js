@@ -212,13 +212,15 @@ const FDAChatbot = () => {
       // 상태 메시지를 저장할 임시 변수
       let currentStatusMessage = null;
       let finalResponse = null;
-      
+      let streamingMessageId = null;  // 토큰 스트리밍 중인 메시지 ID
+      let accumulatedText = '';       // 스트리밍 중 누적된 텍스트
+
       // 상태 이벤트 리스너
       eventSource.addEventListener('status', (e) => {
         try {
           const data = JSON.parse(e.data);
           console.log('Status 이벤트:', data);
-          
+
           // 상태 메시지 업데이트
           const statusMessages = {
             started: '질문을 분석하고 있습니다...',
@@ -229,9 +231,9 @@ const FDAChatbot = () => {
             generating: '답변을 생성하고 있습니다...',
             completed: '답변 생성 완료'
           };
-          
+
           const statusMsg = statusMessages[data.status] || data.message;
-          
+
           // 현재 상태 메시지가 없으면 새로 추가
           if (!currentStatusMessage) {
             currentStatusMessage = {
@@ -241,13 +243,13 @@ const FDAChatbot = () => {
               content: statusMsg,
               timestamp: new Date().toISOString()
             };
-            
+
             setMessages(prev => [...prev, currentStatusMessage]);
           } else {
             // 기존 상태 메시지 업데이트
-            setMessages(prev => 
-              prev.map(msg => 
-                msg.id === currentStatusMessage.id 
+            setMessages(prev =>
+              prev.map(msg =>
+                msg.id === currentStatusMessage.id
                   ? { ...msg, status: data.status, content: statusMsg }
                   : msg
               )
@@ -255,41 +257,78 @@ const FDAChatbot = () => {
             currentStatusMessage.status = data.status;
             currentStatusMessage.content = statusMsg;
           }
-          
+
         } catch (err) {
           console.error('Status 파싱 오류:', err);
         }
       });
-      
+
+      // 토큰 이벤트 리스너 (실시간 스트리밍)
+      eventSource.addEventListener('token', (e) => {
+        try {
+          const data = JSON.parse(e.data);
+          accumulatedText += data.chunk;
+
+          if (!streamingMessageId) {
+            // 첫 토큰: status 메시지를 bot 메시지로 교체
+            streamingMessageId = Date.now() + 1;
+            setMessages(prev => {
+              const withoutStatus = prev.filter(msg => msg.id !== currentStatusMessage?.id);
+              return [...withoutStatus, {
+                id: streamingMessageId,
+                type: 'bot',
+                content: accumulatedText,
+                isStreaming: true,
+                timestamp: new Date().toISOString()
+              }];
+            });
+          } else {
+            // 이후 토큰: 기존 메시지에 텍스트 업데이트
+            setMessages(prev =>
+              prev.map(msg =>
+                msg.id === streamingMessageId
+                  ? { ...msg, content: accumulatedText }
+                  : msg
+              )
+            );
+          }
+        } catch (err) {
+          console.error('Token 파싱 오류:', err);
+        }
+      });
+
       // 결과 이벤트 리스너
       eventSource.addEventListener('result', (e) => {
         try {
           const data = JSON.parse(e.data);
           console.log('Result 이벤트:', data);
-          
+
           finalResponse = {
-            id: Date.now() + 1,
+            id: streamingMessageId || Date.now() + 1,
             type: 'bot',
             content: data.content,
             keywords: data.keywords || [],
             cfr_references: data.cfr_references || [],
             sources: data.sources || [],
             citations: data.citations || [],
+            isStreaming: false,
             timestamp: new Date().toISOString()
           };
-          
-          // 상태 메시지 제거하고 최종 답변 추가
+
+          // 스트리밍 메시지를 최종 답변으로 교체 (citations 추가)
           setMessages(prev => {
-            const withoutStatus = prev.filter(msg => msg.id !== currentStatusMessage?.id);
-            return [...withoutStatus, finalResponse];
+            const withoutOld = prev.filter(msg =>
+              msg.id !== currentStatusMessage?.id && msg.id !== streamingMessageId
+            );
+            return [...withoutOld, finalResponse];
           });
-          
+
           // SSE 사용 해제
           setIsUsingSSE(false);
-          
+
           eventSource.close();
           resolve(finalResponse);
-          
+
         } catch (err) {
           console.error('Result 파싱 오류:', err);
           setIsUsingSSE(false);
