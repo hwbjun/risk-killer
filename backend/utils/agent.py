@@ -48,7 +48,7 @@ class FDAAgent:
         )
 
         self.response_llm = OpenAI(
-            model="gpt-5.2",
+            model="gpt-5.4",
             temperature=0,
             api_key=os.getenv("OPENAI_API_KEY"),
             max_tokens=8000,
@@ -70,7 +70,7 @@ class FDAAgent:
         # 컬렉션 라우팅 기본값 및 보조 LLM
         self.available_collections = ['guidance', 'ecfr', 'gras', 'dwpe', 'fsvp', 'rpm', 'usc']
         self.default_collections = ['guidance', 'ecfr', 'gras', 'dwpe']
-        self.collection_classifier_llm = OpenAI(model="gpt-4o-mini", temperature=0)
+        self.collection_classifier_llm = OpenAI(model="gpt-5.4-nano", temperature=0)
         
         # ⚡ Orchestrator를 한 번만 생성 (속도 최적화)
         # - BM25 캐시 재사용
@@ -275,7 +275,7 @@ Always translate Korean to English before searching.
         """
         try:
             # 필터 전용으로 저렴한 모델을 임시로 사용
-            filter_llm = OpenAI(model="gpt-4o-mini", temperature=0)
+            filter_llm = OpenAI(model="gpt-5.4-nano", temperature=0)
             
             prompt = f"""
             Is the following user query about the regulations for exporting a specific food item?
