@@ -14,7 +14,7 @@ from llama_index.core import Settings
 from llama_index.embeddings.openai import OpenAIEmbedding
 import asyncio
 
-from utils.tools import create_fda_tools
+from utils.orchestrator import SimpleOrchestrator
 from utils.memory import ConversationMemory, ChatMessage
 from utils.collection_strategy import COLLECTION_STRATEGY
 
@@ -55,15 +55,16 @@ class FDAAgent:
             reasoning_effort="low"
         )
 
-        # 1. 모든 FDA 컬렉션을 '전문가 툴'로 변환
-        self.fda_tools = create_fda_tools()
+        # ⚡ 전역 싱글톤 서비스 재사용 (BM25 + Reranker + FDA Tools)
+        self.orchestrator = SimpleOrchestrator()
+        self.fda_tools = self.orchestrator.fda_tools  # 싱글톤에서 공유
 
         # 멀티턴 대화를 위한 메모리 추가
         self.memory = ConversationMemory()
-        
+
         # 제품 분해 캐시 추가
         self.decomposition_cache = {}
-        
+
         # 🆕 검색 결과 캐시 추가 (후속 질문 지원)
         self.search_results_cache = []  # 최근 검색 결과 저장
 
@@ -71,13 +72,6 @@ class FDAAgent:
         self.available_collections = ['guidance', 'ecfr', 'gras', 'dwpe', 'fsvp', 'rpm', 'usc']
         self.default_collections = ['guidance', 'ecfr', 'gras', 'dwpe']
         self.collection_classifier_llm = OpenAI(model="gpt-5.4-nano", temperature=0)
-        
-        # ⚡ Orchestrator를 한 번만 생성 (속도 최적화)
-        # - BM25 캐시 재사용
-        # - Reranker 모델 재사용 (모델 로딩 시간 절약)
-        from utils.orchestrator import SimpleOrchestrator
-        self.orchestrator = SimpleOrchestrator()
-        print("✅ Orchestrator 초기화 완료 (BM25 + Reranker 준비됨)")
 
         # ✅ [수정] 에이전트의 행동 방식을 정의하는 새로운 시스템 프롬프트 (정보 수집 전용)
         system_prompt = """당신은 FDA 규제 정보 수집 전문가입니다.

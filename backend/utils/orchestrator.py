@@ -9,6 +9,7 @@ from utils.reranker import CrossEncoderReranker, AuthorityQuestionBooster, Recen
 from concurrent.futures import ThreadPoolExecutor
 import threading
 from utils.collection_strategy import generate_optimized_query, smart_collection_selection, COLLECTION_STRATEGY
+from utils.tools import create_fda_tools
 
 
 # ============================================================
@@ -55,7 +56,12 @@ class GlobalServices:
                     vector_weight=0.6,
                     bm25_weight=0.4
                 )
-                
+
+                # FDA Tools (한 번만 생성 - 모든 FDAAgent가 공유)
+                print("🔧 FDA Tools 생성 중...")
+                self.fda_tools = create_fda_tools()
+                print(f"✅ FDA Tools 생성 완료 ({len(self.fda_tools)}개 도구)")
+
                 self._initialized = True
                 print("✅ 전역 서비스 초기화 완료!\n")
     
@@ -77,14 +83,15 @@ class SimpleOrchestrator:
         
         # 전역 서비스 참조 (복사 아님!)
         self.qdrant_service = _global_services.qdrant_service
-        self.es_service = _global_services.es_service  # 🔄 bm25_service → es_service
+        self.es_service = _global_services.es_service
         self.hybrid_ranker = _global_services.hybrid_ranker
         self.reranker = _global_services.reranker
+        self.fda_tools = _global_services.fda_tools
         
         # 스레드 풀은 인스턴스별 (가볍기 때문)
         self.executor = ThreadPoolExecutor(max_workers=10)
         
-        print("✅ Orchestrator 초기화 완료 (전역 서비스 재사용)")
+        print("✅ Orchestrator 초기화 완료 (BM25 + Reranker + FDA Tools 재사용)")
     
     def _search_collection_sync(self, collection: str, query: str, limit: int = 5):
         """동기식 검색 (스레드에서 실행용)"""
