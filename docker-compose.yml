@@ -3,11 +3,11 @@ services:
     build:
       context: ./frontend
       args:
+        # CRA는 빌드 시점에만 env를 읽으므로 build.args로만 전달
+        # EC2에서는 ""로 오버라이드하여 App.js의 window.location 동적 판단 활용
         REACT_APP_API_URL: http://localhost:8002
     ports:
       - "3001:3000"
-    environment:
-      - REACT_APP_API_URL=http://localhost:8002
     depends_on:
       - backend
 
@@ -22,6 +22,7 @@ services:
       - ELASTICSEARCH_HOST=${ELASTICSEARCH_HOST}
       - ELASTICSEARCH_USER=${ELASTICSEARCH_USER}
       - ELASTICSEARCH_PASSWORD=${ELASTICSEARCH_PASSWORD}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
       - PYTHONUNBUFFERED=1
     volumes:
       - ./backend:/app

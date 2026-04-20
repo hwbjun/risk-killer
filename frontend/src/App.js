@@ -181,18 +181,21 @@ const FDAChatbot = () => {
 
   // API URL 가져오기 헬퍼 함수
   const getApiUrl = () => {
+    // 빌드 시점 REACT_APP_API_URL이 있으면 그대로 사용 (로컬 개발용)
     if (process.env.REACT_APP_API_URL) {
       return process.env.REACT_APP_API_URL;
     }
-    
-    // 모바일에서 접속할 때는 컴퓨터의 IP 주소 사용
-    const hostname = window.location.hostname;
-    if (hostname === 'localhost' || hostname === '127.0.0.1') {
-      return 'http://localhost:8000';
-    } else {
-      // 모바일에서 접속할 때는 같은 IP 주소의 8000 포트 사용
-      return `http://${hostname}:8000`;
+
+    // 런타임 window.location 기반 동적 판단 (EC2 프로덕션 등)
+    const origin = window.location.origin;
+
+    // IP 직접 접속: :3001 → :8002 (docker-compose 포트 매핑과 일치)
+    if (origin.includes(':3001')) {
+      return origin.replace(':3001', ':8002');
     }
+
+    // 도메인 접속: Nginx 리버스 프록시 뒤에 있다고 가정 → origin 그대로
+    return origin;
   };
 
   // SSE를 사용한 스트리밍 메시지 전송
