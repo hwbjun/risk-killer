@@ -48,3 +48,7 @@ chroma_db/
 # Cursor AI 설정 (각자 생성)
 .cursorrules.claude/ 
 *.whl 
+ 
+# Docker local overrides 
+docker-compose.override.yml 
+docker-compose.override.yaml 
