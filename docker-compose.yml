@@ -4,8 +4,12 @@ services:
       context: ./frontend
       args:
         # CRA는 빌드 시점에만 env를 읽으므로 build.args로만 전달
-        # EC2에서는 ""로 오버라이드하여 App.js의 window.location 동적 판단 활용
-        REACT_APP_API_URL: http://localhost:8002
+        # ${VAR-default} 구문 사용 (콜론 없음):
+        #   - VAR unset → default(http://localhost:8002) 사용 (로컬 개발)
+        #   - VAR="" → 빈 문자열 그대로 전달 (EC2 배포, window.location 동적 판단 활용)
+        #   - VAR="값" → 해당 값 사용
+        # 주의: ${VAR:-default} (콜론 포함)는 빈 문자열도 unset으로 취급하여 default로 덮어쓰므로 사용하지 말 것
+        REACT_APP_API_URL: ${REACT_APP_API_URL-http://localhost:8002}
     ports:
       - "3001:3000"
     depends_on:
