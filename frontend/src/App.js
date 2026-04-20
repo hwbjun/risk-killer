@@ -32,19 +32,10 @@ const FDAChatbot = () => {
 
   const currentProject = projects.find(p => p.active);
   
-  // PWA Service Worker 등록 및 설치 프롬프트 처리
+  // PWA 설치 프롬프트 처리
+  // Service Worker는 제거됨 - FDA 챗봇은 실시간 LLM 응답이 필요하므로 캐싱이 역효과.
+  // 기존 등록된 SW는 public/sw.js의 kill switch가 자동 해제함.
   useEffect(() => {
-    // Service Worker 등록
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js')
-        .then(registration => {
-          console.log('Service Worker registered successfully:', registration);
-        })
-        .catch(error => {
-          console.log('Service Worker registration failed:', error);
-        });
-    }
-
     // 설치 프롬프트 이벤트 리스너
     const handleBeforeInstallPrompt = (e) => {
       e.preventDefault();
