@@ -7,11 +7,28 @@ import HelpModal from './components/HelpModal.jsx';
 import { Lightbulb } from 'lucide-react';
 import './App.css';
 
+// 랜딩 페이지 예시 질문
+const EXAMPLE_QUESTIONS = [
+  {
+    label: "🏷️ 김치 수출 시 필수 라벨링 항목",
+    query: "김치를 미국으로 수출할 때 라벨링에 필요한 요구사항을 알려주세요."
+  },
+  {
+    label: "🏭 FDA 검사 준비 가이드",
+    query: "FDA 검사에 대비하는 방법과 준비사항을 단계별로 알려주세요."
+  },
+  {
+    label: "🚫 통관 거부 예방법",
+    query: "FDA가 식품 수입을 거부하는 주요 사유와 이를 예방하는 방법을 알려주세요."
+  }
+];
+
 const FDAChatbot = () => {
   // PWA 상태 관리
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [showInstallPrompt, setShowInstallPrompt] = useState(false);
   const [deferredPrompt, setDeferredPrompt] = useState(null);
+  const [installPromptShown, setInstallPromptShown] = useState(false);  // 세션 내 1회 제어
   
   const [projects, setProjects] = useState([]);
 
@@ -37,10 +54,10 @@ const FDAChatbot = () => {
   // 기존 등록된 SW는 public/sw.js의 kill switch가 자동 해제함.
   useEffect(() => {
     // 설치 프롬프트 이벤트 리스너
+    // 이벤트 발생 시에는 deferredPrompt만 저장하고, 실제 표시는 첫 답변 완료 후 트리거
     const handleBeforeInstallPrompt = (e) => {
       e.preventDefault();
       setDeferredPrompt(e);
-      setShowInstallPrompt(true);
     };
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
@@ -317,6 +334,16 @@ const FDAChatbot = () => {
             return [...withoutOld, finalResponse];
           });
 
+          // 첫 답변 완료 시점에 PWA 설치 팝업 표시 (세션 내 1회, standalone 제외)
+          if (
+            !installPromptShown &&
+            deferredPrompt &&
+            !window.matchMedia('(display-mode: standalone)').matches
+          ) {
+            setShowInstallPrompt(true);
+            setInstallPromptShown(true);
+          }
+
           // SSE 사용 해제
           setIsUsingSSE(false);
 
@@ -412,8 +439,8 @@ const FDAChatbot = () => {
     }
   };
 
-  const sendMessage = async () => {
-    const message = inputMessage.trim();
+  const sendMessage = async (overrideMessage) => {
+    const message = (typeof overrideMessage === 'string' ? overrideMessage : inputMessage).trim();
     if (!message) return;
 
     // 오프라인 상태 체크
@@ -669,20 +696,20 @@ const FDAChatbot = () => {
       return (
         <>
         {/* 헤더 */}
-        <div className="p-2 lg:p-4 border-b border-purple-100 bg-purple-50/30">
-          <div className="flex flex-col lg:flex-row lg:justify-between lg:items-center gap-3">
-            <div className="flex items-center gap-3">
+        <div className="p-2 lg:p-4 border-b border-purple-100 bg-purple-50/30 pl-16 lg:pl-4">
+          <div className="flex flex-row justify-between items-center gap-3">
+            <div className="hidden md:flex items-center gap-3">
               <p className="text-xs lg:text-sm text-gray-600 leading-relaxed">
                 FDA 공식 문서를 바탕으로 정확한 정보를 제공합니다.
               </p>
             </div>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 ml-auto">
               <button
                 onClick={() => setShowHelpModal(true)}
                 className="flex items-center gap-2 bg-yellow-50 hover:bg-yellow-100 text-yellow-700 px-3 lg:px-4 py-2 rounded-lg border border-yellow-200 hover:border-yellow-300 transition-colors"
               >
                 <Lightbulb className="w-4 h-4" />
-                <span className="text-xs lg:text-sm font-medium">질문이 어려우신가요? 도움말 보기</span>
+                <span className="text-xs lg:text-sm font-medium">무엇을 물어볼까요?</span>
               </button>
             </div>
           </div>
@@ -712,6 +739,25 @@ const FDAChatbot = () => {
                   onFileChange={(e) => handleFileUpload(e.target.files)}
                   isCentered={true}
                 />
+
+                {/* 예시 질문 버튼 그룹 */}
+                <div className="mt-4 flex flex-col md:flex-row md:justify-center gap-2 md:gap-3 flex-wrap">
+                  {EXAMPLE_QUESTIONS.map((example, idx) => (
+                    <button
+                      key={idx}
+                      type="button"
+                      title={example.query}
+                      onClick={() => {
+                        setInputMessage('');
+                        sendMessage(example.query);
+                      }}
+                      disabled={isGenerating}
+                      className="px-4 py-2 text-sm text-gray-700 bg-white border border-purple-100 rounded-3xl shadow-sm hover:bg-purple-50 hover:border-purple-200 hover:-translate-y-0.5 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {example.label}
+                    </button>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
@@ -723,9 +769,10 @@ const FDAChatbot = () => {
     return (
       <>
         {/* 헤더 */}
-        <div className="p-2 lg:p-4 border-b border-purple-100 bg-purple-50/30">
-          <div className="flex flex-col lg:flex-row lg:justify-between lg:items-center gap-3">
-            <div className="flex items-center gap-3">
+        <div className="p-2 lg:p-4 border-b border-purple-100 bg-purple-50/30 pl-16 lg:pl-4">
+          <div className="flex flex-row justify-between items-center gap-3">
+            {/* 제목 영역: 모바일 숨김, PC(lg)에서만 표시 */}
+            <div className="hidden lg:flex items-center gap-3">
               {currentProject ? (
                 <div className="flex items-center gap-2">
                   <h1 className="text-lg lg:text-xl font-semibold text-gray-800">{currentProject.name}</h1>
@@ -734,7 +781,7 @@ const FDAChatbot = () => {
                       const newName = prompt('프로젝트 이름을 변경하세요:', currentProject.name);
                       if (newName && newName.trim()) {
                         console.log('프로젝트 이름 변경:', currentProject.name, '->', newName.trim());
-                        setProjects(prev => prev.map(p => 
+                        setProjects(prev => prev.map(p =>
                           p.id === currentProject.id ? { ...p, name: newName.trim() } : p
                         ));
                       }
@@ -749,14 +796,7 @@ const FDAChatbot = () => {
                 <h1 className="text-lg lg:text-xl font-semibold text-gray-800">FDA Export Assistant</h1>
               )}
             </div>
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => setShowHelpModal(true)}
-                className="flex items-center gap-2 bg-yellow-50 hover:bg-yellow-100 text-yellow-700 px-3 lg:px-4 py-2 rounded-lg border border-yellow-200 hover:border-yellow-300 transition-colors"
-              >
-                <Lightbulb className="w-4 h-4" />
-                <span className="text-xs lg:text-sm font-medium">질문이 어려우신가요? 도움말 보기</span>
-              </button>
+            <div className="flex items-center gap-2 lg:gap-3 ml-auto">
               {currentProject && (
                 <button
                   onClick={resetConversation}
@@ -765,6 +805,13 @@ const FDAChatbot = () => {
                   대화 초기화
                 </button>
               )}
+              <button
+                onClick={() => setShowHelpModal(true)}
+                className="flex items-center gap-2 bg-yellow-50 hover:bg-yellow-100 text-yellow-700 px-3 lg:px-4 py-2 rounded-lg border border-yellow-200 hover:border-yellow-300 transition-colors"
+              >
+                <Lightbulb className="w-4 h-4" />
+                <span className="text-xs lg:text-sm font-medium">무엇을 물어볼까요?</span>
+              </button>
             </div>
           </div>
         </div>
@@ -854,9 +901,9 @@ const FDAChatbot = () => {
         </div>
       )}
 
-      {/* PWA 설치 프롬프트 */}
+      {/* PWA 설치 프롬프트 — 헤더 아래로 위치 */}
       {showInstallPrompt && (
-        <div className="fixed top-4 right-4 z-50 bg-white border border-gray-200 rounded-lg shadow-lg p-4 max-w-sm">
+        <div className="fixed top-16 lg:top-20 right-4 z-50 bg-white border border-gray-200 rounded-lg shadow-lg p-4 max-w-sm">
           <div className="flex items-start gap-3">
             <div className="flex-shrink-0">
               <div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center">

@@ -7,7 +7,7 @@ const InputBar = ({ inputMessage, setInputMessage, isTyping, onSend, onKeyPress,
     
   const inputClass = isCentered
     ? "w-full border border-gray-300 rounded-full px-6 lg:px-8 py-2 lg:py-3 resize-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all text-base lg:text-lg shadow-sm"
-    : "w-full border border-gray-300 rounded-xl px-3 lg:px-4 py-2 lg:py-3 resize-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all text-sm lg:text-base";
+    : "w-full h-10 lg:h-12 border border-gray-300 rounded-xl px-3 lg:px-4 py-2 resize-none overflow-hidden align-middle focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all text-sm lg:text-base leading-normal";
 
   return (
     <div className={containerClass}>
@@ -16,7 +16,7 @@ const InputBar = ({ inputMessage, setInputMessage, isTyping, onSend, onKeyPress,
         {!isCentered && (
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="flex-shrink-0 h-10 lg:h-12 flex items-center justify-center border border-gray-300 rounded-lg hover:bg-gray-50 hover:border-gray-400 transition-colors text-sm lg:text-base px-3"
+            className="flex-shrink-0 w-10 h-10 lg:w-12 lg:h-12 flex items-center justify-center border border-gray-300 rounded-lg hover:bg-gray-50 hover:border-gray-400 transition-colors text-lg lg:text-xl"
             title="파일 업로드"
           >
             +
@@ -31,7 +31,7 @@ const InputBar = ({ inputMessage, setInputMessage, isTyping, onSend, onKeyPress,
             onKeyPress={onKeyPress}
             placeholder={isCentered ? "어떤 도움을 드릴까요?" : "어떤 도움을 드릴까요?"}
             className={`${inputClass} ${isCentered ? 'pr-9 sm:pr-10' : ''}`}
-            rows={isCentered ? 1 : 2}
+            rows={1}
           />
           
           {/* 전송 버튼 (중앙 정렬일 때는 입력창 안에) */}

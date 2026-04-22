@@ -43,7 +43,7 @@ const HelpModal = ({ isOpen, onClose, onSelectQuestion, onSendMessage }) => {
         <div className="flex items-center justify-between p-6 border-b border-gray-200">
           <div className="flex items-center gap-3">
             <Lightbulb className="w-6 h-6 text-yellow-500" />
-            <h2 className="text-xl font-bold text-gray-900">질문이 어려우신가요? 도움말 보기</h2>
+            <h2 className="text-xl font-bold text-gray-900">무엇을 물어볼까요?</h2>
           </div>
           <button
             onClick={onClose}

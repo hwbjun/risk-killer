@@ -8,10 +8,10 @@ const Sidebar = ({ projects, onCreateProject, onSelectProject, onDeleteProject }
 
   return (
     <>
-      {/* 모바일 메뉴 버튼 */}
+      {/* 모바일 메뉴 버튼 — 헤더 라인과 정렬 */}
       <button
         onClick={() => setIsMobileMenuOpen(true)}
-        className="lg:hidden fixed top-4 left-4 z-50 bg-white border border-gray-200 rounded-lg p-2 shadow-lg"
+        className="lg:hidden fixed top-2 left-2 z-50 bg-white border border-gray-200 rounded-lg p-2 shadow-sm"
       >
         <Menu className="w-5 h-5 text-gray-600" />
       </button>
