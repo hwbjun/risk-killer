@@ -18,7 +18,7 @@ const prefersReducedMotion = () =>
   window.matchMedia &&
   window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-const InputBar = ({ inputMessage, setInputMessage, isTyping, onSend, onKeyPress, onDrop, onDragOver, onDragLeave, dragOver, fileInputRef, onFileChange, isCentered = false }) => {
+const InputBar = ({ inputMessage, setInputMessage, isTyping, onSend, onStop, onKeyPress, onDrop, onDragOver, onDragLeave, dragOver, fileInputRef, onFileChange, isCentered = false }) => {
   // ─── 랜딩 페이지 placeholder 타이핑 애니메이션 ───
   // reduced-motion 사용자는 첫 문구 고정, 그 외에는 빈 값으로 시작하여 타이핑
   const [animatedPlaceholder, setAnimatedPlaceholder] = useState(() => {
@@ -131,15 +131,26 @@ const InputBar = ({ inputMessage, setInputMessage, isTyping, onSend, onKeyPress,
           )}
         </div>
 
-        {/* 전송 버튼 (중앙 정렬이 아닐 때) */}
+        {/* 전송 / 중지 버튼 (중앙 정렬이 아닐 때) */}
         {!isCentered && (
-          <button
-            onClick={onSend}
-            disabled={!inputMessage.trim() || isTyping}
-            className="bg-gradient-to-r from-indigo-500 to-indigo-600 text-white px-3 lg:px-6 h-10 lg:h-12 rounded-xl hover:from-indigo-600 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 text-sm lg:text-base whitespace-nowrap flex items-center justify-center"
-          >
-            전송
-          </button>
+          isTyping ? (
+            <button
+              onClick={onStop}
+              className="bg-gray-700 hover:bg-gray-800 text-white px-3 lg:px-6 h-10 lg:h-12 rounded-xl transition-all duration-200 text-sm lg:text-base whitespace-nowrap flex items-center justify-center"
+              title="답변 생성 중지"
+              aria-label="답변 생성 중지"
+            >
+              <span className="inline-block w-3 h-3 bg-white rounded-sm" />
+            </button>
+          ) : (
+            <button
+              onClick={onSend}
+              disabled={!inputMessage.trim()}
+              className="bg-gradient-to-r from-indigo-500 to-indigo-600 text-white px-3 lg:px-6 h-10 lg:h-12 rounded-xl hover:from-indigo-600 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 text-sm lg:text-base whitespace-nowrap flex items-center justify-center"
+            >
+              전송
+            </button>
+          )
         )}
       </div>
 

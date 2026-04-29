@@ -46,6 +46,7 @@ const FDAChatbot = () => {
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef(null);
   const chatAreaRef = useRef(null);
+  const eventSourceRef = useRef(null);  // SSE 중지 기능을 위한 외부 접근 ref
 
   const currentProject = projects.find(p => p.active);
   
@@ -206,6 +207,37 @@ const FDAChatbot = () => {
     return origin;
   };
 
+  // 답변 생성 중지 — SSE 연결 종료 + 현재까지 받은 토큰 보존
+  const stopGeneration = () => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    setIsGenerating(false);
+    setIsUsingSSE(false);
+    stopTimer();
+    // status(로딩 인디케이터) 제거 + 스트리밍 메시지 완료 마킹
+    // 토큰이 안 왔으면 "(답변이 중단되었습니다)" 봇 메시지를 새로 추가
+    setMessages(prev => {
+      const cleaned = prev
+        .filter(msg => msg.type !== 'status')
+        .map(msg => (msg.isStreaming ? { ...msg, isStreaming: false } : msg));
+
+      const hasStreamingMessage = prev.some(msg => msg.isStreaming);
+      if (!hasStreamingMessage) {
+        cleaned.push({
+          id: Date.now(),
+          type: 'bot',
+          content: '(답변이 중단되었습니다)',
+          isStopped: true,
+          isStreaming: false,
+          timestamp: new Date().toISOString()
+        });
+      }
+      return cleaned;
+    });
+  };
+
   // SSE를 사용한 스트리밍 메시지 전송
   const sendMessageSSE = (message, projectId, updatedMessages) => {
     return new Promise((resolve, reject) => {
@@ -219,6 +251,7 @@ const FDAChatbot = () => {
       setIsUsingSSE(true);
       
       const eventSource = new EventSource(url);
+      eventSourceRef.current = eventSource;  // 외부에서 중지 가능하도록 ref 저장
       
       // 상태 메시지를 저장할 임시 변수
       let currentStatusMessage = null;
@@ -348,20 +381,28 @@ const FDAChatbot = () => {
           setIsUsingSSE(false);
 
           eventSource.close();
+          eventSourceRef.current = null;
           resolve(finalResponse);
 
         } catch (err) {
           console.error('Result 파싱 오류:', err);
           setIsUsingSSE(false);
           eventSource.close();
+          eventSourceRef.current = null;
           reject(err);
         }
       });
       
       // 에러 이벤트 리스너
       eventSource.addEventListener('error', (e) => {
+        // 사용자가 stopGeneration으로 의도적 중지한 경우 — 에러 메시지 표시 생략
+        if (eventSourceRef.current === null) {
+          console.log('SSE 의도적 중지 — error 이벤트 무시');
+          return;
+        }
+
         console.error('SSE 에러:', e);
-        
+
         try {
           if (e.data) {
             const errorData = JSON.parse(e.data);
@@ -389,8 +430,9 @@ const FDAChatbot = () => {
         
         // SSE 사용 해제
         setIsUsingSSE(false);
-        
+
         eventSource.close();
+        eventSourceRef.current = null;
         reject(new Error('SSE 연결 오류'));
       });
       
@@ -837,6 +879,7 @@ const FDAChatbot = () => {
           setInputMessage={setInputMessage}
           isTyping={isGenerating}
           onSend={sendMessage}
+          onStop={stopGeneration}
           onKeyPress={handleKeyPress}
           onDrop={handleDrop}
           onDragOver={handleDragOver}
