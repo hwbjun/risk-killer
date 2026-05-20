@@ -1,140 +1,151 @@
-# PROJECT_FDA🏛️
+# 🛡️ RISK KILLER — FDA 규제 가이드라인 AI 에이전트
 
-FDA 식품 수출 규제 안내 시스템
+> 한국 식품 기업의 미국 수출을 지원하는 RAG 기반 AI 에이전트
 
-사용해보기: https://export-assistant.com/
+🔗 **라이브 데모:** [https://export-assistant.com](https://export-assistant.com)  
+📄 **프로젝트 발표 자료:** [포트폴리오 PDF](./docs/portfolio.pdf)
 
-## Overview
+<!-- 스크린샷 추가 시:
+<p align="center">
+  <img src="./docs/screenshot_landing.png" alt="랜딩 페이지" width="800">
+</p>
+-->
 
-한국 식품기업이 미국 수출을 기획할 때 필요한 FDA 규제 정보를 제공하는 지능형 챗봇 시스템입니다. 
-LlamaIndex 프레임워크를 기반으로 한 RAG를 통하여 **6개의 전문화된 FDA 문서 컬렉션**(GRAS, ECFR, DWPE, FSVP, Guidance, USC)에서 정확한 정보를 검색하고 제공합니다.
-ReAct Agent 도입을 통해 복합식품에 대하여 보다 정확한 규제 정보를 제공합니다. 
+## 📋 프로젝트 개요
 
-## Key Features
+| 항목 | 내용 |
+|------|------|
+| **목적** | FDA 공식 규제 문서 6,363건 기반 AI 질의응답 시스템 |
+| **기간** | 2025.08 ~ 운영 중 |
+| **팀 구성** | 2인 공동 개발 |
+| **역할** | RAG 파이프라인 설계 및 구현, 검색 최적화, SSE 스트리밍, 프론트엔드/백엔드 풀스택 개발, EC2 배포 및 운영 |
 
-- **ReAct Agent**: 질문을 분석하여 적절한 FDA 문서 컬렉션을 자동 선택
-- **병렬 검색**: ThreadPoolExecutor를 활용한 다중 컬렉션 동시 검색으로 빠른 응답
-- **프로젝트별 대화 관리**: 각 프로젝트마다 독립적인 대화 기록 유지
-- **PWA 지원**: 모바일 앱처럼 설치 가능하며 오프라인 모드 지원
-- **한국어 지원**: 한국어 질문을 영어로 자동 변환하여 검색
-- **정확성 우선**: 정보가 없으면 솔직하게 인정하고 대안 제시
+한국 식품 기업이 미국으로 수출할 때 필요한 FDA 규제 정보(라벨링, 검사, 통관, 알레르겐 등)를 AI가 공식 문서 기반으로 답변합니다. 7개 컬렉션에서 하이브리드 검색으로 관련 문서를 찾고, ReAct Agent가 부족한 정보를 추가 수집한 뒤, 출처와 함께 답변을 생성합니다.
 
-## Tech Stack
+## 🏗️ 시스템 아키텍처
 
-### Backend
-- **FastAPI**: REST API 서버
-- **LlamaIndex**: RAG 프레임워크 + ReAct Agent
-- **Qdrant Cloud**: 벡터 데이터베이스 (6개 컬렉션)
-- **OpenAI**: gpt-4o-mini (LLM) + text-embedding-3-small (임베딩)
+```mermaid
+graph TB
+    A[사용자 질문] --> B[Frontend - React<br/>SSE 스트리밍]
+    B --> C[Backend - FastAPI]
+    C --> D[질문 필터 + 컬렉션 분류<br/>GPT-5.4-nano]
+    D --> E[하이브리드 검색<br/>Qdrant 벡터 + ES BM25]
+    E --> F[Cross-Encoder Reranker]
+    F --> G{충분성 평가}
+    G -->|충분| H[답변 생성<br/>GPT-5.4 스트리밍]
+    G -->|부족| I[ReAct Agent<br/>GPT-4.1 + FDA Tools]
+    I --> H
+    H -->|SSE 토큰| B
 
-### Frontend  
-- **React**: 사용자 인터페이스
-- **Tailwind CSS**: 스타일링
-- **Lucide React**: 아이콘 라이브러리
-- **PWA**: Service Worker를 통한 오프라인 지원
+    subgraph "검색 인프라"
+        E
+        F
+        J[(Qdrant Cloud<br/>6,363 문서)]
+        K[(Elasticsearch<br/>BM25 인덱스)]
+        E --> J
+        E --> K
+    end
+```
 
-### Development Tools
-- **ChromaDB**: 로컬 문서 RAG 시스템 (개발자용)
-- **Docker**: 컨테이너화된 배포
-- **Evaluation System**: 에이전트 성능 평가 도구 (backend/evaluation/)
+## ✨ 핵심 기능
 
-## Quick Start
+| 기능 | 설명 |
+|------|------|
+| **하이브리드 검색** | Qdrant 벡터 + Elasticsearch BM25 병렬 검색, Cross-Encoder Reranker로 정밀 재정렬 |
+| **Split LLM 구조** | Agent(GPT-4.1) + 답변 생성(GPT-5.4) + 분류(GPT-5.4-nano) 분리로 비용/속도 최적화 |
+| **ReAct Agent** | LlamaIndex AgentWorkflow 기반, 7개 컬렉션에서 도구 자동 선택 |
+| **SSE 토큰 스트리밍** | 실시간 답변 생성, 단계별 상태 표시 (검색 → 평가 → 생성) |
+| **Stop Generation** | 답변 중지 기능, 토큰 보존, 에러 가드 |
+| **출처 기반 답변** | Citation 표시, 컬렉션별 색상 뱃지, 참고자료 토글 |
 
-### Development Environment
+## 🗂️ 데이터셋
 
-1. **Frontend**
+7개 컬렉션, 총 6,363건의 FDA 공식 문서:
+
+| 컬렉션 | 문서 수 | 출처 |
+|--------|--------|------|
+| eCFR (연방규정집) | 1,523 | 미국 연방 전자규정집 |
+| DWPE (수입경보) | 987 | FDA Import Alerts |
+| FSVP (외국공급자검증) | 856 | FSVP 규정 |
+| Guidance (가이드라인) | 1,204 | FDA 산업 가이드라인 |
+| GRAS (안전물질) | 634 | GRAS 공지/청원 |
+| RPM (규제절차매뉴얼) | 445 | FDA 내부 절차 문서 |
+| USC (연방법률) | 714 | 미국 연방법전 |
+
+## 🔧 기술 스택
+
+| 분류 | 기술 |
+|------|------|
+| **AI/LLM** | GPT-5.4 (답변), GPT-4.1 (Agent), GPT-5.4-nano (분류/필터), LlamaIndex AgentWorkflow |
+| **검색** | Qdrant (벡터), Elasticsearch (BM25), Cross-Encoder Reranker, text-embedding-3-small |
+| **Backend** | FastAPI, SSE (Server-Sent Events), Python async |
+| **Frontend** | React, Tailwind CSS |
+| **배포** | Docker, AWS EC2, nginx (프로덕션 빌드) |
+
+## ⚡ 성능 최적화
+
+| 최적화 | 효과 |
+|--------|------|
+| **FDA Tools 싱글톤화** | 에이전트 생성 2-5초 → 0.001초 |
+| **Split LLM** | Agent(GPT-4.1) + 답변(GPT-5.4) 분리로 응답 53-70초 → ~22초 |
+| **프로덕션 빌드** | CRA dev server → nginx + 해시 파일명 캐시 버스팅 |
+| **Service Worker 정리** | 구형 캐시로 인한 API 응답 캐싱 문제 해결 |
+
+## 🖥️ 스크린샷
+
+<!-- 
+스크린샷 추가 시:
+### 랜딩 페이지
+<p align="center">
+  <img src="./docs/screenshot_landing.png" alt="랜딩 페이지" width="700">
+</p>
+
+### 대화 화면
+<p align="center">
+  <img src="./docs/screenshot_chat.png" alt="대화 화면" width="700">
+</p>
+-->
+
+> 📸 스크린샷 추가 예정
+
+## 🚀 실행 방법
+
 ```bash
-cd frontend
-npm install
-npm start  # http://localhost:3000
+# 클론
+git clone https://github.com/hwbjun/risk-killer.git
+cd risk-killer
+
+# 환경변수 설정
+cp .env.example .env
+# .env에 OPENAI_API_KEY, QDRANT_URL 등 설정
+
+# 실행
+docker-compose up -d --build
+
+# 접속
+# http://localhost:3000
 ```
 
-2. **Backend**
-```bash
-cd backend  
-pip install -r requirements.txt
-uvicorn main:app --host 0.0.0.0 --port 8002 
-```
-
-3. **Developer Documentation RAG** (Optional)
-```bash
-cd tools/rag
-setup.bat     # 초기 설정
-start_work.bat  # 작업 시작
-```
-
-### Production Environment
-
-```bash
-docker-compose up --build
-```
-
-## Environment Variables
-
-Create `.env` files in respective directories:
-
-**Backend (.env):**
-```bash
-OPENAI_API_KEY=your_openai_api_key
-QDRANT_URL=https://your-cluster.cloud.qdrant.io:6333  
-QDRANT_API_KEY=your_qdrant_api_key
-```
-
-**Frontend (.env):**
-```bash
-REACT_APP_API_URL=http://localhost:8002
-```
-
-## Project Structure
+## 📁 프로젝트 구조
 
 ```
-PROJECT_FDA_1021/
-├── backend/          # FastAPI server + ReAct Agent
-│   ├── main.py      # FastAPI 서버 및 API 엔드포인트
-│   ├── utils/       # Agent, Tools, Memory, Orchestrator
-│   └── evaluation/  # 에이전트 성능 평가 시스템
-├── frontend/         # React application + PWA
+risk-killer/
+├── frontend/
 │   ├── src/
-│   │   ├── App.js   # 메인 컨테이너 (프로젝트 관리)
-│   │   └── components/  # UI 컴포넌트
-│   └── public/
-│       ├── sw.js    # Service Worker (PWA)
-│       └── manifest.json
-├── docs/             # Project documentation
-├── tools/rag/        # Developer documentation RAG system
+│   │   ├── App.js              # 메인 컨테이너, SSE, 상태 관리
+│   │   └── components/
+│   │       ├── InputBar.jsx    # 입력창, 중지 버튼, Placeholder 애니메이션
+│   │       ├── MessageList.jsx # 메시지 렌더링, Citation 링크
+│   │       └── Sidebar.jsx     # 프로젝트 관리
+│   ├── nginx.conf              # 프로덕션 빌드 설정
+│   └── Dockerfile              # 멀티스테이지 빌드
+├── backend/
+│   ├── main.py                 # FastAPI, SSE 엔드포인트
+│   └── utils/
+│       ├── agent.py            # LlamaIndex ReAct Agent
+│       ├── orchestrator.py     # 검색 파이프라인 오케스트레이션
+│       ├── tools.py            # FDA 도구 (7개 컬렉션)
+│       ├── hybrid_search.py    # 벡터 + BM25 병합
+│       └── reranker.py         # Cross-Encoder 재정렬
 └── docker-compose.yml
 ```
-
-## Documentation
-
-Comprehensive documentation is available in the `docs/` folder:
-
-- **Architecture**: System overview and ReAct agent flow
-- **Backend**: API endpoints and agent tools (6개 컬렉션 설명)
-- **Frontend**: Component architecture and project management system
-- **Development**: Coding standards and Git workflow
-- **Deployment**: Docker setup and environment variables
-
-For developer documentation access, use the RAG system in `tools/rag/`.
-
-## FDA Document Collections
-
-시스템에서 검색하는 6개의 FDA 문서 컬렉션:
-
-1. **GRAS**: 식품 첨가물 안전성 승인 데이터베이스
-2. **ECFR**: 21 CFR (연방 규정) - 제조 기준, HACCP 등
-3. **DWPE**: Import Alert - 수입 거부 및 경고 정보
-4. **FSVP**: 외국 공급업체 검증 프로그램 지침
-5. **Guidance**: FDA 정책 해석 및 가이드라인
-6. **USC**: 21 USC (미국 연방법) - 법적 정의 및 처벌 규정
-
-## Contributing
-
-1. Clone the repository
-2. Set up development environment (see Quick Start)
-3. Check documentation in `docs/` folder or use RAG system
-4. Follow Git workflow and coding standards as documented
-
-## License
-
-This project is licensed under the MIT License.
