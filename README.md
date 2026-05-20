@@ -1,4 +1,4 @@
-# 🛡️ RISK KILLER — FDA 규제 가이드라인 AI 에이전트
+# 🛡️ RISK KILLER - FDA 규제 가이드라인 AI 에이전트
 
 > 한국 식품 기업의 미국 수출을 지원하는 RAG 기반 AI 에이전트
 
