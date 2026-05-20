@@ -20,47 +20,41 @@
 | **팀 구성** | 2인 공동 개발 |
 | **역할** | RAG 파이프라인 설계 및 구현, 검색 최적화, SSE 스트리밍, 프론트엔드/백엔드 풀스택 개발, EC2 배포 및 운영 |
 
-한국 식품 기업이 미국으로 수출할 때 필요한 FDA 규제 정보(라벨링, 검사, 통관, 알레르겐 등)를 AI가 공식 문서 기반으로 답변합니다. 7개 컬렉션에서 하이브리드 검색으로 관련 문서를 찾고, ReAct Agent가 부족한 정보를 추가 수집한 뒤, 출처와 함께 답변을 생성합니다.
+한국 식품 기업이 미국으로 수출할 때 필요한 FDA 규제 정보(라벨링, 검사, 통관, 알레르겐 등)를 AI가 공식 문서 기반으로 답변합니다. 6개 컬렉션에서 하이브리드 검색(Vector 60% + BM25 40%)으로 관련 문서를 찾고, 검색 결과가 부족할 경우 AgentWorkflow가 추가 정보를 수집한 뒤, 출처와 함께 답변을 생성합니다.
 
 ## 🏗️ 시스템 아키텍처
 
 ```mermaid
 graph TB
     A[사용자 질문] --> B[Frontend - React<br/>SSE 스트리밍]
-    B --> C[Backend - FastAPI]
-    C --> D[질문 필터 + 컬렉션 분류<br/>GPT-5.4-nano]
-    D --> E[하이브리드 검색<br/>Qdrant 벡터 + ES BM25]
-    E --> F[Cross-Encoder Reranker]
-    F --> G{충분성 평가}
-    G -->|충분| H[답변 생성<br/>GPT-5.4 스트리밍]
-    G -->|부족| I[ReAct Agent<br/>GPT-4.1 + FDA Tools]
-    I --> H
-    H -->|SSE 토큰| B
-
-    subgraph "검색 인프라"
-        E
-        F
-        J[(Qdrant Cloud<br/>6,363 문서)]
-        K[(Elasticsearch<br/>BM25 인덱스)]
-        E --> J
-        E --> K
-    end
+    B --> C[Query Processor<br/>쿼리 증강 / 제품 추출 / 질문 분류]
+    C -->|복합 질문| D[제품 동적 분해]
+    C -->|일반 질문| E
+    D --> E[Parallel Search<br/>Guidance · FSVP · DWPE · eCFR · USC · GRAS<br/>컬렉션별 최대 5개 수집]
+    E --> F[하이브리드 평가<br/>Vector 60% + BM25 40%]
+    F --> G[Reranking<br/>Cross-Encoder]
+    G --> H{검색 결과 N≤2?}
+    H -->|충분| I[최종 답변 생성<br/>GPT-5.4 스트리밍]
+    H -->|부족| J[AgentWorkflow<br/>FunctionAgent + FDA Tools]
+    J --> I
+    I -->|SSE 토큰| B
+    K[Memory - 3 Turn] -.-> C
 ```
 
 ## ✨ 핵심 기능
 
 | 기능 | 설명 |
 |------|------|
-| **하이브리드 검색** | Qdrant 벡터 + Elasticsearch BM25 병렬 검색, Cross-Encoder Reranker로 정밀 재정렬 |
+| **하이브리드 검색** | Qdrant 벡터(60%) + Elasticsearch BM25(40%) 병렬 검색, Cross-Encoder Reranker로 정밀 재정렬 |
 | **Split LLM 구조** | Agent(GPT-4.1) + 답변 생성(GPT-5.4) + 분류(GPT-5.4-nano) 분리로 비용/속도 최적화 |
-| **ReAct Agent** | LlamaIndex AgentWorkflow 기반, 7개 컬렉션에서 도구 자동 선택 |
+| **AgentWorkflow** | LlamaIndex FunctionAgent 기반, 검색 결과 부족 시(N≤2) 6개 컬렉션에서 도구 자동 선택 |
 | **SSE 토큰 스트리밍** | 실시간 답변 생성, 단계별 상태 표시 (검색 → 평가 → 생성) |
 | **Stop Generation** | 답변 중지 기능, 토큰 보존, 에러 가드 |
 | **출처 기반 답변** | Citation 표시, 컬렉션별 색상 뱃지, 참고자료 토글 |
 
 ## 🗂️ 데이터셋
 
-7개 컬렉션, 총 6,363건의 FDA 공식 문서:
+6개 컬렉션, 총 6,363건의 FDA 공식 문서:
 
 | 컬렉션 | 문서 수 | 출처 |
 |--------|--------|------|
@@ -69,7 +63,6 @@ graph TB
 | FSVP (외국공급자검증) | 856 | FSVP 규정 |
 | Guidance (가이드라인) | 1,204 | FDA 산업 가이드라인 |
 | GRAS (안전물질) | 634 | GRAS 공지/청원 |
-| RPM (규제절차매뉴얼) | 445 | FDA 내부 절차 문서 |
 | USC (연방법률) | 714 | 미국 연방법전 |
 
 ## 🔧 기술 스택
@@ -142,9 +135,9 @@ risk-killer/
 ├── backend/
 │   ├── main.py                 # FastAPI, SSE 엔드포인트
 │   └── utils/
-│       ├── agent.py            # LlamaIndex ReAct Agent
+│       ├── agent.py            # LlamaIndex AgentWorkflow (FunctionAgent)
 │       ├── orchestrator.py     # 검색 파이프라인 오케스트레이션
-│       ├── tools.py            # FDA 도구 (7개 컬렉션)
+│       ├── tools.py            # FDA 도구 (6개 컬렉션)
 │       ├── hybrid_search.py    # 벡터 + BM25 병합
 │       └── reranker.py         # Cross-Encoder 재정렬
 └── docker-compose.yml
