@@ -101,24 +101,6 @@ graph TB
 
 > 📸 스크린샷 추가 예정
 
-## 🚀 실행 방법
-
-```bash
-# 클론
-git clone https://github.com/hwbjun/risk-killer.git
-cd risk-killer
-
-# 환경변수 설정
-cp .env.example .env
-# .env에 OPENAI_API_KEY, QDRANT_URL 등 설정
-
-# 실행
-docker-compose up -d --build
-
-# 접속
-# http://localhost:3000
-```
-
 ## 📁 프로젝트 구조
 
 ```
@@ -142,3 +124,14 @@ risk-killer/
 │       └── reranker.py         # Cross-Encoder 재정렬
 └── docker-compose.yml
 ```
+
+## 📝 최근 커밋 히스토리
+
+| 작업 | 내용 | 효과 |
+|------|------|------|
+| GPT-5.4 마이그레이션 | Split LLM 구조 도입 (Agent/답변/분류 분리) | 응답 53-70초 → ~22초 |
+| SSE 토큰 스트리밍 | EventSource 기반 실시간 답변 전송 | 체감 응답 대기 0초 |
+| FDA Tools 싱글톤화 | 프로젝트별 재생성 제거 | 에이전트 생성 2-5초 → 0.001초 |
+| 프로덕션 빌드 전환 | nginx + 멀티스테이지 Docker + 캐시 버스팅 | 번들 최적화, 캐시 문제 해결 |
+| Stop Generation | SSE 연결 외부 제어 + 에러 가드 | 사용자 제어권 확보 |
+| UX 개선 | 예시 질문, Placeholder 애니메이션, 모바일 헤더 | 신규 사용자 진입 장벽 감소 |
